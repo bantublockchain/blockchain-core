@@ -22,5 +22,11 @@ git submodule update
       }
     }
 
+    stage('dockerize') {
+      steps {
+        sh 'docker build -t interstellartech/blockchain-core .'
+      }
+    }
+
   }
 }
