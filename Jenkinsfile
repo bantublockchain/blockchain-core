@@ -16,5 +16,11 @@ git submodule update
       }
     }
 
+    stage('build') {
+      steps {
+        sh 'make'
+      }
+    }
+
   }
 }
