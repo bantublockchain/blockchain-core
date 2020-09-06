@@ -9,5 +9,12 @@ git submodule update
       }
     }
 
+    stage('configure') {
+      steps {
+        sh '''./autogen.sh
+./configure'''
+      }
+    }
+
   }
 }
