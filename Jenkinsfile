@@ -11,7 +11,7 @@ git submodule update
 
     stage('configure') {
       steps {
-        sh '''./autogen.sh
+        sh '''./autogen.sh --skip-submodules
 ./configure'''
       }
     }
