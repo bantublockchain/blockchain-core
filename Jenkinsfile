@@ -1,5 +1,12 @@
 pipeline {
   agent any
+
+   environment {
+    registry = 'interstellartech/blockchain-core'
+    registryCredential = 'dockerhub-interstellartech'
+  }
+
+
   stages {
     stage('init-submodules') {
       steps {
@@ -22,9 +29,28 @@ git submodule update
       }
     }
 
-    stage('dockerize') {
-      steps {
-        sh 'docker build -t interstellartech/blockchain-core .'
+    stage('Building image') {
+      steps{
+        script {
+          dockerImage = docker.build("$registry:$BUILD_NUMBER", " .")
+        }
+      }
+    }
+
+    stage('Deploy Image') {
+      steps{
+        script {
+          docker.withRegistry( '', registryCredential ) {
+            dockerImage.push()
+            dockerImage.push('latest')
+          }
+        }
+      }
+    }
+
+    stage('Remove Unused docker image') {
+      steps{
+        sh "docker rmi $registry:$BUILD_NUMBER"
       }
     }
 
