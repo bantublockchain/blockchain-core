@@ -7,4 +7,4 @@ RUN apt-get clean
 COPY src/stellar-core /sbin/blockchain-core
 RUN chmod u+x /sbin/blockchain-core
 
-ENTRYPOINT ["/sbin/blockchain-core"]
+ENTRYPOINT ["/sbin/blockchain-core", "--conf", "/blockchain-core.cfg"]
