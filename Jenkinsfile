@@ -16,12 +16,12 @@ git submodule update
       }
     }
 
-//     stage('configure') {
-//       steps {
-//         sh '''./autogen.sh --skip-submodules
-// ./configure'''
-//       }
-//     }
+    stage('configure') {
+      steps {
+        sh '''./autogen.sh --skip-submodules
+./configure'''
+      }
+    }
 
     stage('build') {
       steps {
