@@ -12,10 +12,11 @@ namespace stellar
 
 class CatchupConfiguration;
 
-int runWithConfig(Config cfg);
+int runWithConfig(Config cfg, optional<CatchupConfiguration> cc);
 void setForceSCPFlag();
 void initializeDatabase(Config cfg);
 void httpCommand(std::string const& command, unsigned short port);
+int selfCheck(Config cfg);
 void showOfflineInfo(Config cfg);
 int reportLastHistoryCheckpoint(Config cfg, std::string const& outputFile);
 #ifdef BUILD_TESTS

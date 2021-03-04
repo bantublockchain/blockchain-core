@@ -539,11 +539,13 @@ After observing consensus, a new field `quorum` will be set with information on 
       "quorum" : {
          "qset" : {
             "ledger" : 22267866,
+            "cost" : 20883268,
             "agree" : 5,
             "delayed" : 0,
             "disagree" : 0,
             "fail_at" : 3,
             "hash" : "980a24",
+            "lag_ms" : 430,
             "missing" : 0,
             "phase" : "EXTERNALIZE"
          },
@@ -584,7 +586,10 @@ configurable as `LOG_FILE_PATH`.
 
  Log messages are classified by progressive _priority levels_:
   `TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR` and `FATAL`.
-   The logging system only emits those messages at or above its configured logging level. 
+   The logging system only emits those messages at or above its configured logging level.
+
+Log messages at different priority levels can be color-coded on standard output
+by setting `LOG_COLOR=true` in the config file. By default they are not color-coded.
 
 The log level can be controlled by configuration, the `-ll` command-line flag 
 or adjusted dynamically by administrative (HTTP) commands. Run:
@@ -634,10 +639,12 @@ The output will look something like
       "quorum" : {
          "qset" : {
             "agree" : 6,
+            "cost" : 20883268,
             "delayed" : 0,
             "disagree" : 0,
             "fail_at" : 2,
             "hash" : "d5c247",
+            "lag_ms" : 430,
             "ledger" : 24311579,
             "missing" : 1,
             "phase" : "EXTERNALIZE"
@@ -805,14 +812,24 @@ The output looks something like:
 
 ```json
 {
-   "node" : "GCTSFJ36M7ZMTSX7ZKG6VJKPIDBDA26IEWRGV65DVX7YVVLBPE5ZWMIO",
+   "node" : "GCTSF",
    "qset" : {
       "agree" : 6,
+      "cost" : 20883268,
       "delayed" : null,
       "disagree" : null,
       "fail_at" : 2,
       "fail_with" : [ "sdf_watcher1", "sdf_watcher2" ],
       "hash" : "d5c247",
+      "lag_ms" : {
+         "sdf_watcher1" : 192,
+         "sdf_watcher2" : 215,
+         "sdf_watcher3" : 79,
+         "stronghold1" : 321,
+         "eno" : 266,
+         "tempo.eu.com" : 225,
+         "satoshipay" : 249,
+      },
       "ledger" : 24311847,
       "missing" : [ "stronghold1" ],
       "phase" : "EXTERNALIZE",
@@ -831,7 +848,7 @@ The output looks something like:
    },
    "transitive" : {
       "critical": [
-         [ "GDM7M262ZJJPV4BZ5SLGYYUTJGIGM25ID2XGKI3M6IDN6QLSTWQKTXQM" ]
+         [ "GDM7M" ]
       ],
       "intersection" : true,
       "last_check_ledger" : 24311536,

@@ -189,14 +189,7 @@ CreateClaimableBalanceOpFrame::doApply(AbstractLedgerTxn& ltx)
     claimableBalanceEntry.amount = amount;
     claimableBalanceEntry.asset = asset;
 
-    OperationID operationID;
-    operationID.type(ENVELOPE_TYPE_OP_ID);
-    operationID.id().sourceAccount = toMuxedAccount(mParentTx.getSourceID());
-    operationID.id().seqNum = mParentTx.getSeqNum();
-    operationID.id().opNum = mOpIndex;
-
-    claimableBalanceEntry.balanceID.v0() =
-        sha256(xdr::xdr_to_opaque(operationID));
+    claimableBalanceEntry.balanceID.v0() = getBalanceID();
 
     claimableBalanceEntry.claimants = claimants;
     for (auto& claimant : claimableBalanceEntry.claimants)
@@ -247,7 +240,7 @@ CreateClaimableBalanceOpFrame::doCheckValid(uint32_t ledgerVersion)
     }
 
     // check for duplicates
-    std::unordered_set<AccountID> dests;
+    UnorderedSet<AccountID> dests;
     for (auto const& claimant : claimants)
     {
         auto const& dest = claimant.v0().destination;
@@ -272,7 +265,7 @@ CreateClaimableBalanceOpFrame::doCheckValid(uint32_t ledgerVersion)
 
 void
 CreateClaimableBalanceOpFrame::insertLedgerKeysToPrefetch(
-    std::unordered_set<LedgerKey>& keys) const
+    UnorderedSet<LedgerKey>& keys) const
 {
     // Prefetch trustline for non-native assets
     if (mCreateClaimableBalance.asset.type() != ASSET_TYPE_NATIVE)
@@ -280,5 +273,17 @@ CreateClaimableBalanceOpFrame::insertLedgerKeysToPrefetch(
         keys.emplace(
             trustlineKey(getSourceID(), mCreateClaimableBalance.asset));
     }
+}
+
+Hash
+CreateClaimableBalanceOpFrame::getBalanceID()
+{
+    OperationID operationID;
+    operationID.type(ENVELOPE_TYPE_OP_ID);
+    operationID.id().sourceAccount = toMuxedAccount(mParentTx.getSourceID());
+    operationID.id().seqNum = mParentTx.getSeqNum();
+    operationID.id().opNum = mOpIndex;
+
+    return xdrSha256(operationID);
 }
 }

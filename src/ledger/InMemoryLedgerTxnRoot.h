@@ -1,10 +1,10 @@
-#include "ledger/GeneralizedLedgerEntry.h"
+#include "ledger/InternalLedgerEntry.h"
 #include "ledger/LedgerTxn.h"
 #include "ledger/LedgerTxnImpl.h"
+#include "util/UnorderedMap.h"
 #include "xdr/Stellar-ledger-entries.h"
 #include <map>
 #include <set>
-#include <unordered_map>
 #include <vector>
 
 // This is a stub helper class that pretends to implements a "root"
@@ -27,13 +27,13 @@ class InMemoryLedgerTxnRoot : public AbstractLedgerTxnParent
     void commitChild(EntryIterator iter, LedgerTxnConsistency cons) override;
     void rollbackChild() override;
 
-    std::unordered_map<LedgerKey, LedgerEntry> getAllOffers() override;
+    UnorderedMap<LedgerKey, LedgerEntry> getAllOffers() override;
     std::shared_ptr<LedgerEntry const>
     getBestOffer(Asset const& buying, Asset const& selling) override;
     std::shared_ptr<LedgerEntry const>
     getBestOffer(Asset const& buying, Asset const& selling,
                  OfferDescriptor const& worseThan) override;
-    std::unordered_map<LedgerKey, LedgerEntry>
+    UnorderedMap<LedgerKey, LedgerEntry>
     getOffersByAccountAndAsset(AccountID const& account,
                                Asset const& asset) override;
 
@@ -42,8 +42,8 @@ class InMemoryLedgerTxnRoot : public AbstractLedgerTxnParent
     std::vector<InflationWinner>
     getInflationWinners(size_t maxWinners, int64_t minBalance) override;
 
-    std::shared_ptr<GeneralizedLedgerEntry const>
-    getNewestVersion(GeneralizedLedgerKey const& key) const override;
+    std::shared_ptr<InternalLedgerEntry const>
+    getNewestVersion(InternalLedgerKey const& key) const override;
 
     uint64_t countObjects(LedgerEntryType let) const override;
     uint64_t countObjects(LedgerEntryType let,
@@ -57,6 +57,9 @@ class InMemoryLedgerTxnRoot : public AbstractLedgerTxnParent
     void dropTrustLines() override;
     void dropClaimableBalances() override;
     double getPrefetchHitRate() const override;
-    uint32_t prefetch(std::unordered_set<LedgerKey> const& keys) override;
+    uint32_t prefetch(UnorderedSet<LedgerKey> const& keys) override;
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+    void resetForFuzzer() override;
+#endif // FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 };
 }

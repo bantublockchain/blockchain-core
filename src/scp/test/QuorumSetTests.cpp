@@ -39,13 +39,14 @@ TEST_CASE("sane quorum set", "[scp][quorumset]")
     auto check = [&](SCPQuorumSet const& qSetCheck, bool expected,
                      SCPQuorumSet const& expectedSelfQSet) {
         // first, without normalization
-        REQUIRE(expected == isQuorumSetSane(qSetCheck, false));
+        char const* errString;
+        REQUIRE(expected == isQuorumSetSane(qSetCheck, false, errString));
 
         // secondary test: attempts to build local node with the set
         // (this normalizes the set)
         auto normalizedQSet = qSetCheck;
         normalizeQSet(normalizedQSet);
-        auto selfIsSane = isQuorumSetSane(qSetCheck, false);
+        auto selfIsSane = isQuorumSetSane(qSetCheck, false, errString);
 
         REQUIRE(expected == selfIsSane);
         REQUIRE(expectedSelfQSet == normalizedQSet);
@@ -200,13 +201,13 @@ TEST_CASE("sane quorum set", "[scp][quorumset]")
     SECTION("{ t: 1, v0, { t: 1, v1, { .. t: 1, "
             "v_{MAXIMUM_QUORUM_NESTING_LEVEL + 1} }..} -> too deep")
     {
-        testNestingLevel(Config::MAXIMUM_QUORUM_NESTING_LEVEL + 1, false);
+        testNestingLevel(MAXIMUM_QUORUM_NESTING_LEVEL + 1, false);
     }
 
     SECTION("{ t: 1, v0, { t: 1, v1, { .. t: 1, v_MAXIMUM_QUORUM_NESTING_LEVEL "
             "}..} ")
     {
-        testNestingLevel(Config::MAXIMUM_QUORUM_NESTING_LEVEL, true);
+        testNestingLevel(MAXIMUM_QUORUM_NESTING_LEVEL, true);
     }
 
     SECTION("{ t: 1, v0..v999 } -> { t: 1, v0..v999 }")

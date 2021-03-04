@@ -8,8 +8,10 @@
 #include "catchup/ApplyBucketsWork.h"
 #include "catchup/CatchupConfiguration.h"
 #include "database/Database.h"
+#include "herder/Herder.h"
 #include "history/HistoryArchive.h"
 #include "history/HistoryArchiveManager.h"
+#include "history/HistoryArchiveReportWork.h"
 #include "historywork/GetHistoryArchiveStateWork.h"
 #include "ledger/LedgerManager.h"
 #include "main/ErrorMessages.h"
@@ -17,6 +19,7 @@
 #include "main/Maintainer.h"
 #include "main/PersistentState.h"
 #include "main/StellarCoreVersion.h"
+#include "overlay/OverlayManager.h"
 #include "util/Logging.h"
 #include "work/WorkScheduler.h"
 
@@ -27,23 +30,45 @@ namespace stellar
 {
 
 int
-runWithConfig(Config cfg)
+runWithConfig(Config cfg, optional<CatchupConfiguration> cc)
 {
+    VirtualClock::Mode clockMode = VirtualClock::REAL_TIME;
+
     if (cfg.MANUAL_CLOSE)
     {
         if (!cfg.NODE_IS_VALIDATOR)
         {
-            LOG(ERROR) << "Starting stellar-core in MANUAL_CLOSE mode requires "
-                          "NODE_IS_VALIDATOR to be set";
+            LOG_ERROR(DEFAULT_LOG,
+                      "Starting stellar-core in MANUAL_CLOSE mode requires "
+                      "NODE_IS_VALIDATOR to be set");
             return 1;
+        }
+        if (cfg.RUN_STANDALONE)
+        {
+            clockMode = VirtualClock::VIRTUAL_TIME;
+            if (cfg.AUTOMATIC_MAINTENANCE_COUNT != 0 ||
+                cfg.AUTOMATIC_MAINTENANCE_PERIOD.count() != 0)
+            {
+                LOG_WARNING(
+                    DEFAULT_LOG,
+                    "Using MANUAL_CLOSE and RUN_STANDALONE together "
+                    "induces virtual time, which requires automatic "
+                    "maintenance to be disabled.  "
+                    "AUTOMATIC_MAINTENANCE_COUNT and "
+                    "AUTOMATIC_MAINTENANCE_PERIOD are being overridden to "
+                    "0.");
+                cfg.AUTOMATIC_MAINTENANCE_COUNT = 0;
+                cfg.AUTOMATIC_MAINTENANCE_PERIOD = std::chrono::seconds{0};
+            }
         }
     }
 
-    LOG(INFO) << "Starting stellar-core " << STELLAR_CORE_VERSION;
-    VirtualClock clock(VirtualClock::REAL_TIME);
+    LOG_INFO(DEFAULT_LOG, "Starting stellar-core {}", STELLAR_CORE_VERSION);
+    VirtualClock clock(clockMode);
     Application::pointer app;
     try
     {
+        cfg.COMMANDS.push_back("self-check");
         app = Application::create(clock, cfg, false);
 
         if (!app->getHistoryArchiveManager().checkSensibleConfig())
@@ -52,18 +77,40 @@ runWithConfig(Config cfg)
         }
         if (cfg.ARTIFICIALLY_ACCELERATE_TIME_FOR_TESTING)
         {
-            LOG(WARNING) << "Artificial acceleration of time enabled "
-                         << "(for testing only)";
+            LOG_WARNING(
+                DEFAULT_LOG,
+                "Artificial acceleration of time enabled (for testing only)");
         }
 
-        app->start();
+        if (cc)
+        {
+            Json::Value catchupInfo;
+            std::shared_ptr<HistoryArchive> archive;
+            auto const& ham = app->getHistoryArchiveManager();
+            archive = ham.selectRandomReadableHistoryArchive();
+            int res = catchup(app, *cc, catchupInfo, archive);
+            if (res != 0)
+            {
+                return res;
+            }
+        }
+        else
+        {
+            app->start();
+        }
+
+        if (!cfg.MODE_AUTO_STARTS_OVERLAY)
+        {
+            app->getHerder().restoreState();
+            app->getOverlayManager().start();
+        }
 
         app->applyCfgCommands();
     }
     catch (std::exception const& e)
     {
-        LOG(FATAL) << "Got an exception: " << e.what();
-        LOG(FATAL) << REPORT_INTERNAL_BUG;
+        LOG_FATAL(DEFAULT_LOG, "Got an exception: {}", e.what());
+        LOG_FATAL(DEFAULT_LOG, "{}", REPORT_INTERNAL_BUG);
         return 1;
     }
 
@@ -78,7 +125,7 @@ runWithConfig(Config cfg)
     }
     catch (std::exception const& e)
     {
-        LOG(FATAL) << "Got an exception: " << e.what();
+        LOG_FATAL(DEFAULT_LOG, "Got an exception: {}", e.what());
         throw; // propagate exception (core dump, etc)
     }
     return 0;
@@ -122,22 +169,44 @@ httpCommand(std::string const& command, unsigned short port)
     int code = http_request("127.0.0.1", path.str(), port, ret);
     if (code == 200)
     {
-        LOG(INFO) << ret;
+        LOG_INFO(DEFAULT_LOG, "{}", ret);
     }
     else
     {
-        LOG(INFO) << "http failed(" << code << ") port: " << port
-                  << " command: " << command;
+        LOG_INFO(DEFAULT_LOG, "http failed({}) port: {} command: {}", code,
+                 port, command);
+    }
+}
+
+int
+selfCheck(Config cfg)
+{
+    VirtualClock clock;
+    cfg.setNoListen();
+    Application::pointer app = Application::create(clock, cfg, false);
+    std::shared_ptr<HistoryArchiveReportWork> w =
+        app->getHistoryArchiveManager().scheduleHistoryArchiveReportWork();
+    while (clock.crank(true) && !w->isDone())
+        ;
+    if (w->getState() == BasicWork::State::WORK_SUCCESS)
+    {
+        return 0;
+    }
+    else
+    {
+        return 1;
     }
 }
 
 void
 setForceSCPFlag()
 {
-    LOG(WARNING) << "* ";
-    LOG(WARNING) << "* Nothing to do: `force scp` command has been deprecated";
-    LOG(WARNING) << "* Refer to `--wait-for-consensus` run option instead";
-    LOG(WARNING) << "* ";
+    LOG_WARNING(DEFAULT_LOG, "* ");
+    LOG_WARNING(DEFAULT_LOG,
+                "* Nothing to do: `force scp` command has been deprecated");
+    LOG_WARNING(DEFAULT_LOG,
+                "* Refer to `--wait-for-consensus` run option instead");
+    LOG_WARNING(DEFAULT_LOG, "* ");
 }
 
 void
@@ -147,9 +216,10 @@ initializeDatabase(Config cfg)
     cfg.setNoListen();
     Application::pointer app = Application::create(clock, cfg);
 
-    LOG(INFO) << "*";
-    LOG(INFO) << "* The next launch will catchup from the network afresh.";
-    LOG(INFO) << "*";
+    LOG_INFO(DEFAULT_LOG, "*");
+    LOG_INFO(DEFAULT_LOG,
+             "* The next launch will catchup from the network afresh.");
+    LOG_INFO(DEFAULT_LOG, "*");
 }
 
 void
@@ -187,7 +257,7 @@ rebuildLedgerFromBuckets(Config cfg)
     auto hasStr = ps.getState(PersistentState::kHistoryArchiveState);
     auto pass = ps.getState(PersistentState::kNetworkPassphrase);
 
-    LOG(INFO) << "Re-initializing database ledger tables.";
+    LOG_INFO(DEFAULT_LOG, "Re-initializing database ledger tables.");
     auto& db = app->getDatabase();
     auto& session = app->getDatabase().getSession();
     soci::transaction tx(session);
@@ -195,14 +265,14 @@ rebuildLedgerFromBuckets(Config cfg)
     db.initialize();
     db.upgradeToCurrentSchema();
     db.clearPreparedStatementCache();
-    LOG(INFO) << "Re-initialized database ledger tables.";
+    LOG_INFO(DEFAULT_LOG, "Re-initialized database ledger tables.");
 
-    LOG(INFO) << "Re-storing persistent state.";
+    LOG_INFO(DEFAULT_LOG, "Re-storing persistent state.");
     ps.setState(PersistentState::kLastClosedLedger, lcl);
     ps.setState(PersistentState::kHistoryArchiveState, hasStr);
     ps.setState(PersistentState::kNetworkPassphrase, pass);
 
-    LOG(INFO) << "Applying buckets from LCL bucket list.";
+    LOG_INFO(DEFAULT_LOG, "Applying buckets from LCL bucket list.");
     std::map<std::string, std::shared_ptr<Bucket>> localBuckets;
     auto& ws = app->getWorkScheduler();
 
@@ -216,16 +286,16 @@ rebuildLedgerFromBuckets(Config cfg)
     if (ok)
     {
         tx.commit();
-        LOG(INFO) << "*";
-        LOG(INFO) << "* Rebuilt ledger from buckets successfully.";
-        LOG(INFO) << "*";
+        LOG_INFO(DEFAULT_LOG, "*");
+        LOG_INFO(DEFAULT_LOG, "* Rebuilt ledger from buckets successfully.");
+        LOG_INFO(DEFAULT_LOG, "*");
     }
     else
     {
         tx.rollback();
-        LOG(INFO) << "*";
-        LOG(INFO) << "* Rebuild of ledger failed.";
-        LOG(INFO) << "*";
+        LOG_INFO(DEFAULT_LOG, "*");
+        LOG_INFO(DEFAULT_LOG, "* Rebuild of ledger failed.");
+        LOG_INFO(DEFAULT_LOG, "*");
     }
 
     app->gracefulStop();
@@ -255,23 +325,25 @@ reportLastHistoryCheckpoint(Config cfg, std::string const& outputFile)
 
         if (filename == "-")
         {
-            LOG(INFO) << "*";
-            LOG(INFO) << "* Last history checkpoint " << state.toString();
-            LOG(INFO) << "*";
+            LOG_INFO(DEFAULT_LOG, "*");
+            LOG_INFO(DEFAULT_LOG, "* Last history checkpoint {}",
+                     state.toString());
+            LOG_INFO(DEFAULT_LOG, "*");
         }
         else
         {
             state.save(filename);
-            LOG(INFO) << "*";
-            LOG(INFO) << "* Wrote last history checkpoint " << filename;
-            LOG(INFO) << "*";
+            LOG_INFO(DEFAULT_LOG, "*");
+            LOG_INFO(DEFAULT_LOG, "* Wrote last history checkpoint {}",
+                     filename);
+            LOG_INFO(DEFAULT_LOG, "*");
         }
     }
     else
     {
-        LOG(INFO) << "*";
-        LOG(INFO) << "* Fetching last history checkpoint failed.";
-        LOG(INFO) << "*";
+        LOG_INFO(DEFAULT_LOG, "*");
+        LOG_INFO(DEFAULT_LOG, "* Fetching last history checkpoint failed.");
+        LOG_INFO(DEFAULT_LOG, "*");
     }
 
     app->gracefulStop();
@@ -312,9 +384,9 @@ writeCatchupInfo(Json::Value const& catchupInfo, std::string const& outputFile)
 
     if (filename == "-")
     {
-        LOG(INFO) << "*";
-        LOG(INFO) << "* Catchup info: " << content;
-        LOG(INFO) << "*";
+        LOG_INFO(DEFAULT_LOG, "*");
+        LOG_INFO(DEFAULT_LOG, "* Catchup info: {}", content);
+        LOG_INFO(DEFAULT_LOG, "*");
     }
     else
     {
@@ -324,9 +396,9 @@ writeCatchupInfo(Json::Value const& catchupInfo, std::string const& outputFile)
         out.write(content.c_str(), content.size());
         out.close();
 
-        LOG(INFO) << "*";
-        LOG(INFO) << "* Wrote catchup info to " << filename;
-        LOG(INFO) << "*";
+        LOG_INFO(DEFAULT_LOG, "*");
+        LOG_INFO(DEFAULT_LOG, "* Wrote catchup info to {}", filename);
+        LOG_INFO(DEFAULT_LOG, "*");
     }
 }
 
@@ -342,14 +414,17 @@ catchup(Application::pointer app, CatchupConfiguration cc,
     }
     catch (std::invalid_argument const&)
     {
-        LOG(INFO) << "*";
-        LOG(INFO) << "* Target ledger " << cc.toLedger()
-                  << " is not newer than last closed ledger "
-                  << app->getLedgerManager().getLastClosedLedgerNum()
-                  << " - nothing to do";
-        LOG(INFO) << "* If you really want to catchup to " << cc.toLedger()
-                  << " run stellar-core new-db";
-        LOG(INFO) << "*";
+        LOG_INFO(DEFAULT_LOG, "*");
+        LOG_INFO(DEFAULT_LOG,
+                 "* Target ledger {} is not newer than last closed ledger {} - "
+                 "nothing to do",
+                 cc.toLedger(),
+                 app->getLedgerManager().getLastClosedLedgerNum());
+        LOG_INFO(
+            DEFAULT_LOG,
+            "* If you really want to catchup to {} run stellar-core new-db",
+            cc.toLedger());
+        LOG_INFO(DEFAULT_LOG, "*");
         return 2;
     }
 
@@ -384,16 +459,16 @@ catchup(Application::pointer app, CatchupConfiguration cc,
         }
     }
 
-    LOG(INFO) << "*";
+    LOG_INFO(DEFAULT_LOG, "*");
     if (synced)
     {
-        LOG(INFO) << "* Catchup finished.";
+        LOG_INFO(DEFAULT_LOG, "* Catchup finished.");
     }
     else
     {
-        LOG(INFO) << "* Catchup failed.";
+        LOG_INFO(DEFAULT_LOG, "* Catchup failed.");
     }
-    LOG(INFO) << "*";
+    LOG_INFO(DEFAULT_LOG, "*");
 
     catchupInfo = app->getJsonInfo();
     return synced ? 0 : 3;
@@ -422,9 +497,9 @@ publish(Application::pointer app)
     // Cleanup buckets not referenced by publish queue anymore
     app->getBucketManager().forgetUnreferencedBuckets();
 
-    LOG(INFO) << "*";
-    LOG(INFO) << "* Publish finished.";
-    LOG(INFO) << "*";
+    LOG_INFO(DEFAULT_LOG, "*");
+    LOG_INFO(DEFAULT_LOG, "* Publish finished.");
+    LOG_INFO(DEFAULT_LOG, "*");
 
     return 0;
 }

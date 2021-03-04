@@ -112,8 +112,7 @@ class BulkUpsertDataOperation : public DatabaseTypeSpecificOperation<void>
         for (auto const& e : entryIter)
         {
             assert(e.entryExists());
-            assert(e.entry().type() ==
-                   GeneralizedLedgerEntryType::LEDGER_ENTRY);
+            assert(e.entry().type() == InternalLedgerEntryType::LEDGER_ENTRY);
             accumulateEntry(e.entry().ledgerEntry());
         }
     }
@@ -224,7 +223,7 @@ class BulkDeleteDataOperation : public DatabaseTypeSpecificOperation<void>
         for (auto const& e : entries)
         {
             assert(!e.entryExists());
-            assert(e.key().type() == GeneralizedLedgerEntryType::LEDGER_ENTRY);
+            assert(e.key().type() == InternalLedgerEntryType::LEDGER_ENTRY);
             assert(e.key().ledgerKey().type() == DATA);
             auto const& data = e.key().ledgerKey().data();
             mAccountIDs.emplace_back(KeyUtils::toStrKey(data.accountID));
@@ -318,7 +317,7 @@ LedgerTxnRoot::Impl::dropData()
 {
     throwIfChild();
     mEntryCache.clear();
-    mBestOffersCache.clear();
+    mBestOffers.clear();
 
     std::string coll = mDatabase.getSimpleCollationClause();
 
@@ -333,6 +332,14 @@ LedgerTxnRoot::Impl::dropData()
                               "lastmodified INT          NOT NULL,"
                               "PRIMARY KEY  (accountid, dataname)"
                               ");";
+    if (!mDatabase.isSqlite())
+    {
+        mDatabase.getSession() << "ALTER TABLE accountdata "
+                               << "ALTER COLUMN accountid "
+                               << "TYPE VARCHAR(56) COLLATE \"C\", "
+                               << "ALTER COLUMN dataname "
+                               << "TYPE VARCHAR(88) COLLATE \"C\"";
+    }
 }
 
 class BulkLoadDataOperation
@@ -387,8 +394,7 @@ class BulkLoadDataOperation
     }
 
   public:
-    BulkLoadDataOperation(Database& db,
-                          std::unordered_set<LedgerKey> const& keys)
+    BulkLoadDataOperation(Database& db, UnorderedSet<LedgerKey> const& keys)
         : mDb(db)
     {
         mAccountIDs.reserve(keys.size());
@@ -472,9 +478,8 @@ class BulkLoadDataOperation
 #endif
 };
 
-std::unordered_map<LedgerKey, std::shared_ptr<LedgerEntry const>>
-LedgerTxnRoot::Impl::bulkLoadData(
-    std::unordered_set<LedgerKey> const& keys) const
+UnorderedMap<LedgerKey, std::shared_ptr<LedgerEntry const>>
+LedgerTxnRoot::Impl::bulkLoadData(UnorderedSet<LedgerKey> const& keys) const
 {
     ZoneScoped;
     ZoneValue(static_cast<int64_t>(keys.size()));

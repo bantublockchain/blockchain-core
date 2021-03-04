@@ -44,6 +44,7 @@ SurveyManager::startSurvey(SurveyMessageCommandType type,
     // queued peers are only cleared when we start the NEXT survey so we know
     // which peers were in our backlog before we stopped
     mPeersToSurvey.clear();
+    mPeersToSurveyQueue = std::queue<NodeID>();
 
     mRunningSurveyType = make_optional<SurveyMessageCommandType>(type);
 
@@ -71,8 +72,7 @@ SurveyManager::stopSurvey()
 
     clearCurve25519Keys(mCurve25519PublicKey, mCurve25519SecretKey);
 
-    CLOG(INFO, "Overlay") << "SurveyResults "
-                          << getJsonResults().toStyledString();
+    CLOG_INFO(Overlay, "SurveyResults {}", getJsonResults().toStyledString());
 }
 
 void
@@ -135,8 +135,8 @@ SurveyManager::relayOrProcessResponse(StellarMessage const& msg,
             }
             catch (std::exception const& e)
             {
-                CLOG(ERROR, "Overlay")
-                    << "processing survey response failed: " << e.what();
+                CLOG_ERROR(Overlay, "processing survey response failed: {}",
+                           e.what());
 
                 mBadResponseNodes.emplace(response.surveyedPeerID);
                 return;
@@ -248,9 +248,8 @@ SurveyManager::processTopologyResponse(NodeID const& surveyedPeerID,
 void
 SurveyManager::processTopologyRequest(SurveyRequestMessage const& request) const
 {
-    CLOG(TRACE, "Overlay") << "Responding to Topology request from "
-                           << mApp.getConfig().toShortString(
-                                  request.surveyorPeerID);
+    CLOG_TRACE(Overlay, "Responding to Topology request from {}",
+               mApp.getConfig().toShortString(request.surveyorPeerID));
 
     StellarMessage newMsg;
     newMsg.type(SURVEY_RESPONSE);
@@ -291,7 +290,7 @@ SurveyManager::processTopologyRequest(SurveyRequestMessage const& request) const
     }
     catch (std::exception const& e)
     {
-        CLOG(ERROR, "Overlay") << "curve25519Encrypt failed: " << e.what();
+        CLOG_ERROR(Overlay, "curve25519Encrypt failed: {}", e.what());
         return;
     }
 
@@ -460,14 +459,17 @@ SurveyManager::topOffRequests(SurveyMessageCommandType type)
            requestsSentInSchedule < MAX_REQUEST_LIMIT_PER_LEDGER &&
            !mPeersToSurvey.empty())
     {
-        auto it = mPeersToSurvey.begin();
-        auto key = *it;
+        if (mPeersToSurveyQueue.empty())
+        {
+            throw std::runtime_error("mPeersToSurveyQueue unexpectedly empty");
+        }
+        auto key = mPeersToSurveyQueue.front();
+        mPeersToSurvey.erase(key);
+        mPeersToSurveyQueue.pop();
 
         sendTopologyRequest(key);
 
         ++requestsSentInSchedule;
-
-        mPeersToSurvey.erase(it);
     }
 
     std::weak_ptr<SurveyManager> weak = shared_from_this();
@@ -498,6 +500,7 @@ SurveyManager::addPeerToBacklog(NodeID const& nodeToSurvey)
     // filter conditions-
     // 1. already queued
     // 2. node would survey itself
+    // This ensures that mPeersToSurveyQueue doesn't contain any duplicates.
     if (mPeersToSurvey.count(nodeToSurvey) != 0 ||
         nodeToSurvey == mApp.getConfig().NODE_SEED.getPublicKey())
     {
@@ -513,6 +516,7 @@ SurveyManager::addPeerToBacklog(NodeID const& nodeToSurvey)
     mResults["topology"][KeyUtils::toStrKey(nodeToSurvey)].clear();
 
     mPeersToSurvey.emplace(nodeToSurvey);
+    mPeersToSurveyQueue.emplace(nodeToSurvey);
 }
 
 bool

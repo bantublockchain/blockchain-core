@@ -174,12 +174,12 @@ TEST_CASE("create account", "[tx][createaccount]")
         for_versions_from(14, *app, [&] {
             auto key = SecretKey::pseudoRandomForTesting();
             TestAccount a1(*app, key);
-            auto tx =
-                transactionFrameFromOps(app->getNetworkID(), root,
-                                        {root.op(sponsorFutureReserves(a1)),
-                                         root.op(createAccount(a1, 0)),
-                                         a1.op(confirmAndClearSponsor())},
-                                        {key});
+            auto tx = transactionFrameFromOps(
+                app->getNetworkID(), root,
+                {root.op(beginSponsoringFutureReserves(a1)),
+                 root.op(createAccount(a1, 0)),
+                 a1.op(endSponsoringFutureReserves())},
+                {key});
 
             {
                 LedgerTxn ltx(app->getLedgerTxnRoot());
@@ -197,5 +197,18 @@ TEST_CASE("create account", "[tx][createaccount]")
                                  0);
             }
         });
+    }
+
+    SECTION("too many sponsoring")
+    {
+        auto key1 = getAccount("a1");
+        auto key2 = getAccount("a2");
+        TestAccount a1(*app, key1);
+        TestAccount a2(*app, key2);
+
+        // This works because root is the sponsoring account in
+        // tooManySponsoring
+        tooManySponsoring(*app, a1, a2, root.op(createAccount(a1, 0)),
+                          root.op(createAccount(a2, 0)));
     }
 }

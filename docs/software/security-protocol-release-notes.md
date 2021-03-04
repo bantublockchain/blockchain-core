@@ -53,6 +53,52 @@ It then follows that:
 
 # List of releases
 
+## v15.0.0 (2020-10-27)
+
+* `Ledger` - protocol - CAP0023 - Fixed `LedgerKey` input validation issue
+
+## v14.1.1 (2020-10-01)
+
+* `Ledger` - security - fixed potential local state corruption when applying transactions from history archive
+    * exploited: no
+    * mitigation: code fix
+
+## v14.1.0 (2020-09-28)
+
+* `Ledger` - security - fixed potential non deterministic computation of best offer
+    * exploited: no
+    * mitigation: code fix
+
+## v14.0.0 (2020-08-20)
+
+* `Ledger` - protocol - CAP0023 - Two-Part Payments with ClaimableBalanceEntry
+* `Ledger` - protocol - CAP0033 - Sponsored Reserve
+* `SCP` - protocol - CAP0034 - Preserve Transaction-Set/Close-Time Affinity During Nomination
+* `SCP` - security - fix an edge case that could lead to nominating an invalid close time
+    * exploited: no
+    * mitigation: code fix
+
+## v13.2.0 (2020-06-30)
+
+* `SCP` - security - fixed crash that could be triggered when receiving out of order messages at the wrong time
+    * exploited: no
+    * mitigation: code fix
+
+## v13.1.0 (2020-05-29)
+
+* `Overlay` - security - remote crash via unhandled exception during connection handshake (DoS)
+    * exploited: no
+    * mitigation: code fix
+    * bug bounty: [ahook](https://hackerone.com/ahook)
+
+## v13.0.0 (2020-04-29)
+
+* `Ledger` - protocol - CAP0015 - Fee-Bump Transactions
+* `Ledger` - protocol - CAP0018 - Fine-Grained Control of Authorization (eg. AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG)
+* `Ledger` - protocol - CAP0027 - First-class multiplexed accounts
+* `Ledger` - protocol - CAP0028 - Clear pre-auth transaction signer on failed transactions
+* `Ledger` - protocol - CAP0030 - Remove NO_ISSUER Operation Results
+
 ## v12.1.0 (2019-10-24)
 
 * `SCP` - protocol - added `CRITICAL` quality to quorum config generator

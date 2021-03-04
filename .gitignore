@@ -78,8 +78,10 @@ compile_commands.json
 /scripts/*.json
 
 # test output
-/stellar-core-test-*
-/fuzz-findings/
+stellar-core-test-*
+test-partitions.*
+fuzz-findings/
+min-testcases/
 /my-history/
 
 # Windows specific

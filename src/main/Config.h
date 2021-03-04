@@ -8,6 +8,7 @@
 #include "overlay/StellarXDR.h"
 #include "util/SecretValue.h"
 #include "util/Timer.h"
+#include "util/UnorderedMap.h"
 #include "util/optional.h"
 
 #include <map>
@@ -55,7 +56,7 @@ class Config : public std::enable_shared_from_this<Config>
 
     void validateConfig(ValidationThresholdLevels thresholdLevel);
     void loadQset(std::shared_ptr<cpptoml::table> group, SCPQuorumSet& qset,
-                  int level);
+                  uint32 level);
 
     void processConfig(std::shared_ptr<cpptoml::table>);
 
@@ -76,12 +77,11 @@ class Config : public std::enable_shared_from_this<Config>
     std::string toString(ValidatorQuality q) const;
     ValidatorQuality parseQuality(std::string const& q) const;
 
-    std::vector<ValidatorEntry>
-    parseValidators(std::shared_ptr<cpptoml::base> validators,
-                    std::unordered_map<std::string, ValidatorQuality> const&
-                        domainQualityMap);
+    std::vector<ValidatorEntry> parseValidators(
+        std::shared_ptr<cpptoml::base> validators,
+        UnorderedMap<std::string, ValidatorQuality> const& domainQualityMap);
 
-    std::unordered_map<std::string, ValidatorQuality>
+    UnorderedMap<std::string, ValidatorQuality>
     parseDomainsQuality(std::shared_ptr<cpptoml::base> domainsQuality);
 
     static SCPQuorumSet
@@ -92,18 +92,15 @@ class Config : public std::enable_shared_from_this<Config>
     static SCPQuorumSet
     generateQuorumSet(std::vector<ValidatorEntry> const& validators);
 
-    void
-    addSelfToValidators(std::vector<ValidatorEntry>& validators,
-                        std::unordered_map<std::string, ValidatorQuality> const&
-                            domainQualityMap);
+    void addSelfToValidators(
+        std::vector<ValidatorEntry>& validators,
+        UnorderedMap<std::string, ValidatorQuality> const& domainQualityMap);
 
     void verifyHistoryValidatorsBlocking(
         std::vector<ValidatorEntry> const& validators);
 
   public:
     static const uint32 CURRENT_LEDGER_PROTOCOL_VERSION;
-    // level = 0 when there is no nesting.
-    static const uint32 MAXIMUM_QUORUM_NESTING_LEVEL;
 
     typedef std::shared_ptr<Config> pointer;
 
@@ -215,6 +212,11 @@ class Config : public std::enable_shared_from_this<Config>
     // it is halted.
     bool MODE_DOES_CATCHUP;
 
+    // A config parameter that controls whether the application starts the
+    // overlay on startup, or waits for a later startup after performing some
+    // other pre-overlay-start operations (eg. offline catchup).
+    bool MODE_AUTO_STARTS_OVERLAY;
+
     // A config to allow connections to localhost
     // this should only be enabled when testing as it's a security issue
     bool ALLOW_LOCALHOST_FOR_TESTING;
@@ -279,7 +281,7 @@ class Config : public std::enable_shared_from_this<Config>
 
     // maximum allowed drift for close time when joining the network for the
     // first time
-    uint64 MAXIMUM_LEDGER_CLOSETIME_DRIFT;
+    time_t MAXIMUM_LEDGER_CLOSETIME_DRIFT;
 
     // note: all versions in the range
     // [OVERLAY_PROTOCOL_MIN_VERSION, OVERLAY_PROTOCOL_VERSION] must be handled
@@ -287,6 +289,7 @@ class Config : public std::enable_shared_from_this<Config>
     uint32_t OVERLAY_PROTOCOL_VERSION;     // max overlay version understood
     std::string VERSION_STR;
     std::string LOG_FILE_PATH;
+    bool LOG_COLOR;
     std::string BUCKET_DIR_PATH;
     uint32_t TESTING_UPGRADE_DESIRED_FEE; // in stroops
     uint32_t TESTING_UPGRADE_RESERVE;     // in stroops
@@ -306,10 +309,10 @@ class Config : public std::enable_shared_from_this<Config>
     unsigned short PEER_AUTHENTICATION_TIMEOUT;
     unsigned short PEER_TIMEOUT;
     unsigned short PEER_STRAGGLER_TIMEOUT;
-    std::chrono::milliseconds MAX_BATCH_READ_PERIOD_MS;
-    int MAX_BATCH_READ_COUNT;
     int MAX_BATCH_WRITE_COUNT;
     int MAX_BATCH_WRITE_BYTES;
+    double FLOOD_OP_RATE_PER_LEDGER;
+    int FLOOD_TX_PERIOD_MS;
     static constexpr auto const POSSIBLY_PREFERRED_EXTRA = 2;
     static constexpr auto const REALLY_DEAD_NUM_FAILURES_CUTOFF = 120;
 
@@ -367,11 +370,7 @@ class Config : public std::enable_shared_from_this<Config>
     // Data layer cache configuration
     // - ENTRY_CACHE_SIZE controls the maximum number of LedgerEntry objects
     //   that will be stored in the cache
-    // - BEST_OFFERS_CACHE_SIZE controls the maximum number of Asset pairs that
-    //   will be stored in the cache, although many LedgerEntry objects may be
-    //   associated with a single Asset pair
     size_t ENTRY_CACHE_SIZE;
-    size_t BEST_OFFERS_CACHE_SIZE;
 
     // Data layer prefetcher configuration
     // - PREFETCH_BATCH_SIZE determines how many records we'll prefetch per
@@ -385,6 +384,10 @@ class Config : public std::enable_shared_from_this<Config>
     // doing a graceful shutdown
     bool TEST_CASES_ENABLED;
 #endif
+
+    // Any transaction that reaches the TransactionQueue will be rejected if it
+    // contains an operation in this list.
+    std::vector<OperationType> EXCLUDE_TRANSACTIONS_CONTAINING_OPERATION_TYPE;
 
     Config();
 
@@ -410,5 +413,9 @@ class Config : public std::enable_shared_from_this<Config>
 
     // function to stringify a quorum set
     std::string toString(SCPQuorumSet const& qset);
+
+    // A special name to be used for stdin in stead of a file name in command
+    // line arguments.
+    static std::string const STDIN_SPECIAL_NAME;
 };
 }

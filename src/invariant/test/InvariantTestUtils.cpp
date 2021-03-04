@@ -72,7 +72,11 @@ store(Application& app, UpdateList const& apply, AbstractLedgerTxn* ltxPtr,
             REQUIRE(false);
         }
 
-        if (entry && entry.current().data.type() == ACCOUNT)
+        if (previous && !current)
+        {
+            REQUIRE_THROWS_AS(!entry, std::runtime_error);
+        }
+        else if (entry && entry.current().data.type() == ACCOUNT)
         {
             normalizeSigners(entry.current().data.account());
         }
@@ -157,7 +161,7 @@ normalizeSigners(AccountEntry& acc)
     // well
     xdr::xvector<Signer, MAX_SIGNERS> sortedSigners;
     xdr::xvector<SponsorshipDescriptor, MAX_SIGNERS> sortedSignerSponsoringIDs;
-    bool aeIsV2 = acc.ext.v() == 1 && acc.ext.v1().ext.v() == 2;
+    bool aeIsV2 = hasAccountEntryExtV2(acc);
 
     for (size_t index : indices)
     {
@@ -175,6 +179,13 @@ normalizeSigners(AccountEntry& acc)
         acc.ext.v1().ext.v2().signerSponsoringIDs.swap(
             sortedSignerSponsoringIDs);
     }
+}
+
+int64_t
+getMinBalance(Application& app, AccountEntry const& acc)
+{
+    LedgerTxn ltx(app.getLedgerTxnRoot());
+    return getMinBalance(ltx.loadHeader().current(), acc);
 }
 }
 }

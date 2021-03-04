@@ -2,8 +2,8 @@
 // under the Apache License, Version 2.0. See the COPYING file at the root
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
-#include "transactions/UpdateSponsorshipOpFrame.h"
-#include "ledger/GeneralizedLedgerEntry.h"
+#include "transactions/RevokeSponsorshipOpFrame.h"
+#include "ledger/InternalLedgerEntry.h"
 #include "ledger/LedgerTxn.h"
 #include "ledger/LedgerTxnEntry.h"
 #include "transactions/SponsorshipUtils.h"
@@ -12,16 +12,16 @@
 namespace stellar
 {
 
-UpdateSponsorshipOpFrame::UpdateSponsorshipOpFrame(Operation const& op,
+RevokeSponsorshipOpFrame::RevokeSponsorshipOpFrame(Operation const& op,
                                                    OperationResult& res,
                                                    TransactionFrame& parentTx)
     : OperationFrame(op, res, parentTx)
-    , mUpdateSponsorshipOp(mOperation.body.revokeSponsorshipOp())
+    , mRevokeSponsorshipOp(mOperation.body.revokeSponsorshipOp())
 {
 }
 
 bool
-UpdateSponsorshipOpFrame::isVersionSupported(uint32_t protocolVersion) const
+RevokeSponsorshipOpFrame::isVersionSupported(uint32_t protocolVersion) const
 {
     return protocolVersion >= 14;
 }
@@ -47,7 +47,7 @@ getAccountID(LedgerEntry const& le)
 }
 
 bool
-UpdateSponsorshipOpFrame::processSponsorshipResult(SponsorshipResult sr)
+RevokeSponsorshipOpFrame::processSponsorshipResult(SponsorshipResult sr)
 {
     switch (sr)
     {
@@ -68,9 +68,9 @@ UpdateSponsorshipOpFrame::processSponsorshipResult(SponsorshipResult sr)
 }
 
 bool
-UpdateSponsorshipOpFrame::updateLedgerEntrySponsorship(AbstractLedgerTxn& ltx)
+RevokeSponsorshipOpFrame::updateLedgerEntrySponsorship(AbstractLedgerTxn& ltx)
 {
-    auto ltxe = ltx.load(mUpdateSponsorshipOp.ledgerKey());
+    auto ltxe = ltx.load(mRevokeSponsorshipOp.ledgerKey());
     if (!ltxe)
     {
         innerResult().code(REVOKE_SPONSORSHIP_DOES_NOT_EXIST);
@@ -209,7 +209,7 @@ UpdateSponsorshipOpFrame::updateLedgerEntrySponsorship(AbstractLedgerTxn& ltx)
 }
 
 bool
-UpdateSponsorshipOpFrame::tryRemoveEntrySponsorship(
+RevokeSponsorshipOpFrame::tryRemoveEntrySponsorship(
     AbstractLedgerTxn& ltx, LedgerTxnHeader const& header, LedgerEntry& le,
     LedgerEntry& sponsoringAcc, LedgerEntry& sponsoredAcc)
 {
@@ -223,7 +223,7 @@ UpdateSponsorshipOpFrame::tryRemoveEntrySponsorship(
     return true;
 }
 bool
-UpdateSponsorshipOpFrame::tryEstablishEntrySponsorship(
+RevokeSponsorshipOpFrame::tryEstablishEntrySponsorship(
     AbstractLedgerTxn& ltx, LedgerTxnHeader const& header, LedgerEntry& le,
     LedgerEntry& sponsoringAcc, LedgerEntry& sponsoredAcc)
 {
@@ -238,9 +238,9 @@ UpdateSponsorshipOpFrame::tryEstablishEntrySponsorship(
 }
 
 bool
-UpdateSponsorshipOpFrame::updateSignerSponsorship(AbstractLedgerTxn& ltx)
+RevokeSponsorshipOpFrame::updateSignerSponsorship(AbstractLedgerTxn& ltx)
 {
-    auto const& accountID = mUpdateSponsorshipOp.signer().accountID;
+    auto const& accountID = mRevokeSponsorshipOp.signer().accountID;
     auto sponsoredAcc = loadAccount(ltx, accountID);
     if (!sponsoredAcc)
     {
@@ -250,7 +250,7 @@ UpdateSponsorshipOpFrame::updateSignerSponsorship(AbstractLedgerTxn& ltx)
     auto& ae = sponsoredAcc.current().data.account();
 
     auto findRes = findSignerByKey(ae.signers.begin(), ae.signers.end(),
-                                   mUpdateSponsorshipOp.signer().signerKey);
+                                   mRevokeSponsorshipOp.signer().signerKey);
     if (!findRes.second)
     {
         innerResult().code(REVOKE_SPONSORSHIP_DOES_NOT_EXIST);
@@ -260,7 +260,7 @@ UpdateSponsorshipOpFrame::updateSignerSponsorship(AbstractLedgerTxn& ltx)
     size_t index = it - ae.signers.begin();
 
     bool wasSignerSponsored = false;
-    if (ae.ext.v() == 1 && ae.ext.v1().ext.v() == 2)
+    if (hasAccountEntryExtV2(ae))
     {
         auto& extV2 = ae.ext.v1().ext.v2();
         if (index >= extV2.signerSponsoringIDs.size())
@@ -374,9 +374,9 @@ UpdateSponsorshipOpFrame::updateSignerSponsorship(AbstractLedgerTxn& ltx)
 }
 
 bool
-UpdateSponsorshipOpFrame::doApply(AbstractLedgerTxn& ltx)
+RevokeSponsorshipOpFrame::doApply(AbstractLedgerTxn& ltx)
 {
-    switch (mUpdateSponsorshipOp.type())
+    switch (mRevokeSponsorshipOp.type())
     {
     case REVOKE_SPONSORSHIP_LEDGER_ENTRY:
         return updateLedgerEntrySponsorship(ltx);
@@ -388,8 +388,55 @@ UpdateSponsorshipOpFrame::doApply(AbstractLedgerTxn& ltx)
 }
 
 bool
-UpdateSponsorshipOpFrame::doCheckValid(uint32_t ledgerVersion)
+RevokeSponsorshipOpFrame::doCheckValid(uint32_t ledgerVersion)
 {
+    if (ledgerVersion <= 14)
+    {
+        return true;
+    }
+
+    if (mRevokeSponsorshipOp.type() == REVOKE_SPONSORSHIP_LEDGER_ENTRY)
+    {
+        auto const& lk = mRevokeSponsorshipOp.ledgerKey();
+        switch (lk.type())
+        {
+        case ACCOUNT:
+            break;
+        case TRUSTLINE:
+        {
+            auto const& tl = lk.trustLine();
+            if (!isAssetValid(tl.asset) ||
+                (tl.asset.type() == ASSET_TYPE_NATIVE) ||
+                (getIssuer(tl.asset) == tl.accountID))
+            {
+                innerResult().code(REVOKE_SPONSORSHIP_DOES_NOT_EXIST);
+                return false;
+            }
+            break;
+        }
+        case OFFER:
+            if (lk.offer().offerID <= 0)
+            {
+                innerResult().code(REVOKE_SPONSORSHIP_DOES_NOT_EXIST);
+                return false;
+            }
+            break;
+        case DATA:
+        {
+            auto const& name = lk.data().dataName;
+            if ((name.size() < 1) || !isString32Valid(name))
+            {
+                innerResult().code(REVOKE_SPONSORSHIP_DOES_NOT_EXIST);
+                return false;
+            }
+            break;
+        }
+        case CLAIMABLE_BALANCE:
+            break;
+        default:
+            abort();
+        }
+    }
     return true;
 }
 }

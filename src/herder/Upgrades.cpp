@@ -611,12 +611,12 @@ updateOffer(
     return res;
 }
 
-static std::unordered_map<AccountID, int64_t>
+static UnorderedMap<AccountID, int64_t>
 getOfferAccountMinBalances(
     AbstractLedgerTxn& ltx, LedgerTxnHeader const& header,
     std::map<AccountID, std::vector<LedgerTxnEntry>> const& offersByAccount)
 {
-    std::unordered_map<AccountID, int64_t> minBalanceMap;
+    UnorderedMap<AccountID, int64_t> minBalanceMap;
     for (auto const& accountOffers : offersByAccount)
     {
         auto const& accountID = accountOffers.first;
@@ -635,10 +635,11 @@ getOfferAccountMinBalances(
 }
 
 static void
-eraseOfferWithPossibleSponsorship(
-    AbstractLedgerTxn& ltx, LedgerTxnHeader const& header,
-    LedgerTxnEntry& offerEntry, LedgerTxnEntry& accountEntry,
-    std::unordered_set<AccountID>& changedAccounts)
+eraseOfferWithPossibleSponsorship(AbstractLedgerTxn& ltx,
+                                  LedgerTxnHeader const& header,
+                                  LedgerTxnEntry& offerEntry,
+                                  LedgerTxnEntry& accountEntry,
+                                  UnorderedSet<AccountID>& changedAccounts)
 {
     LedgerEntry::_ext_t extension = offerEntry.current().ext;
     bool isSponsored = extension.v() == 1 && extension.v1().sponsoringID;
@@ -678,11 +679,11 @@ eraseOfferWithPossibleSponsorship(
 static void
 prepareLiabilities(AbstractLedgerTxn& ltx, LedgerTxnHeader const& header)
 {
-    CLOG(INFO, "Ledger") << "Starting prepareLiabilities";
+    CLOG_INFO(Ledger, "Starting prepareLiabilities");
 
     auto offersByAccount = ltx.loadAllOffers();
 
-    std::unordered_set<AccountID> changedAccounts;
+    UnorderedSet<AccountID> changedAccounts;
     uint64_t nChangedTrustLines = 0;
 
     std::map<UpdateOfferResult, uint64_t> nUpdatedOffers;
@@ -767,8 +768,7 @@ prepareLiabilities(AbstractLedgerTxn& ltx, LedgerTxnHeader const& header)
                 default:
                     throw std::runtime_error("Unknown UpdateOfferResult");
                 }
-                CLOG(DEBUG, "Ledger")
-                    << "Offer with offerID=" << offerID << message;
+                CLOG_DEBUG(Ledger, "Offer with offerID={}{}", offerID, message);
             }
         }
 
@@ -833,15 +833,14 @@ prepareLiabilities(AbstractLedgerTxn& ltx, LedgerTxnHeader const& header)
         }
     }
 
-    CLOG(INFO, "Ledger") << "prepareLiabilities completed with "
-                         << changedAccounts.size() << " accounts modified, "
-                         << nChangedTrustLines << " trustlines modified, "
-                         << nUpdatedOffers[UpdateOfferResult::Adjusted]
-                         << " offers adjusted, "
-                         << nUpdatedOffers[UpdateOfferResult::AdjustedToZero]
-                         << " offers adjusted to zero, and "
-                         << nUpdatedOffers[UpdateOfferResult::Erase]
-                         << " offers erased";
+    CLOG_INFO(Ledger,
+              "prepareLiabilities completed with {} accounts modified, {} "
+              "trustlines modified, {} offers adjusted, {} offers adjusted to "
+              "zero, and {} offers erased",
+              changedAccounts.size(), nChangedTrustLines,
+              nUpdatedOffers[UpdateOfferResult::Adjusted],
+              nUpdatedOffers[UpdateOfferResult::AdjustedToZero],
+              nUpdatedOffers[UpdateOfferResult::Erase]);
 }
 
 void

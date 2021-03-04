@@ -34,6 +34,14 @@ struct SlotEnvelopes
 
     // list of ready envelopes that haven't been sent to SCP yet
     std::vector<SCPEnvelopeWrapperPtr> mReadyEnvelopes;
+
+    // track cost per validator in local qset
+    // cost includes sizes of:
+    //   * envelopes
+    //   * txsets `NodeID` introduces either itself or via its
+    //     quorum (our transitive quorum)
+    //   * qsets
+    UnorderedMap<NodeID, size_t> mReceivedCost;
 };
 
 class PendingEnvelopes
@@ -47,7 +55,7 @@ class PendingEnvelopes
     // recent quorum sets
     RandomEvictionCache<Hash, SCPQuorumSetPtr> mQsetCache;
     // weak references to all known qsets
-    std::unordered_map<Hash, std::weak_ptr<SCPQuorumSet>> mKnownQSets;
+    UnorderedMap<Hash, std::weak_ptr<SCPQuorumSet>> mKnownQSets;
 
     ItemFetcher mTxSetFetcher;
     ItemFetcher mQuorumSetFetcher;
@@ -56,7 +64,10 @@ class PendingEnvelopes
     // recent txsets
     RandomEvictionCache<Hash, TxSetFramCacheItem> mTxSetCache;
     // weak references to all known txsets
-    std::unordered_map<Hash, std::weak_ptr<TxSetFrame>> mKnownTxSets;
+    UnorderedMap<Hash, std::weak_ptr<TxSetFrame>> mKnownTxSets;
+
+    // keep track of txset/qset hash -> size pairs for quick access
+    RandomEvictionCache<Hash, size_t> mValueSizeCache;
 
     bool mRebuildQuorum;
     QuorumTracker mQuorumTracker;
@@ -68,6 +79,8 @@ class PendingEnvelopes
     medida::Timer& mFetchDuration;
     medida::Timer& mFetchTxSetTimer;
     medida::Timer& mFetchQsetTimer;
+    // Tracked cost per slot
+    medida::Histogram& mCostPerSlot;
 
     // discards all SCP envelopes thats use QSet with given hash,
     // as it is not sane QSet
@@ -93,6 +106,14 @@ class PendingEnvelopes
     TxSetFramePtr getKnownTxSet(Hash const& hash, uint64 slot, bool touch);
 
     void cleanKnownData();
+
+    void recordReceivedCost(SCPEnvelope const& env);
+
+    UnorderedMap<NodeID, size_t> getCostPerValidator(uint64 slotIndex) const;
+
+    // stops all pending downloads for slots strictly below `slotIndex`
+    // counts partially downloaded data towards the cost for that slot
+    void stopAllBelow(uint64 slotIndex);
 
   public:
     PendingEnvelopes(Application& app, HerderImpl& herder);
@@ -156,9 +177,10 @@ class PendingEnvelopes
 
     SCPEnvelopeWrapperPtr pop(uint64 slotIndex);
 
+    // erases data for all slots strictly below `slotIndex`
     void eraseBelow(uint64 slotIndex);
 
-    void slotClosed(uint64 slotIndex);
+    void forceRebuildQuorum();
 
     std::vector<uint64> readySlots();
 
@@ -174,7 +196,11 @@ class PendingEnvelopes
     void rebuildQuorumTrackerState();
     QuorumTracker::QuorumMap const& getCurrentlyTrackedQuorum() const;
 
-    // updates internal state when an envelope was succesfuly processed
+    // updates internal state when an envelope was successfully processed
     void envelopeProcessed(SCPEnvelope const& env);
+
+    void reportCostOutliersForSlot(int64_t slotIndex, bool updateMetrics) const;
+    Json::Value getJsonValidatorCost(bool summary, bool fullKeys,
+                                     uint64 index) const;
 };
 }

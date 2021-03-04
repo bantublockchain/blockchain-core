@@ -117,6 +117,17 @@ class TestNominationSCP : public SCPDriver
         static Value const emptyValue{};
         return emptyValue;
     }
+
+    Hash
+    getHashOf(std::vector<xdr::opaque_vec<>> const& vals) const override
+    {
+        SHA256 hasher;
+        for (auto const& v : vals)
+        {
+            hasher.add(v);
+        }
+        return hasher.finish();
+    }
 };
 
 class NominationTestHandler : public NominationProtocol
@@ -230,8 +241,8 @@ TEST_CASE("nomination weight stats", "[scp][!hide]")
             for (auto& w : wins)
             {
                 double stats = double(w.second * 100) / double(totalRounds);
-                CLOG(INFO, "SCP") << "Got " << stats
-                                  << ((v0NodeID == w.first) ? " LOCAL" : "");
+                CLOG_INFO(SCP, "Got {}{}", stats,
+                          ((v0NodeID == w.first) ? " LOCAL" : ""));
             }
         };
 
@@ -259,10 +270,9 @@ TEST_CASE("nomination weight stats", "[scp][!hide]")
             bool outer =
                 std::any_of(qSet.validators.begin(), qSet.validators.end(),
                             [&](auto const& k) { return k == w.first; });
-            CLOG(INFO, "SCP")
-                << "Got " << stats << " "
-                << ((v0NodeID == w.first) ? "LOCAL"
-                                          : (outer ? "OUTER" : "INNER"));
+            CLOG_INFO(SCP, "Got {} {}", stats,
+                      ((v0NodeID == w.first) ? "LOCAL"
+                                             : (outer ? "OUTER" : "INNER")));
         }
     }
 }
@@ -290,16 +300,17 @@ TEST_CASE("nomination two nodes win stats", "[scp][!hide]")
     auto nominationLeaders = [&](int maxRounds, SCPQuorumSet qSetNode0,
                                  SCPQuorumSet qSetNode1) {
         TestNominationSCP nomSCP0(v0NodeID, qSetNode0);
-        Slot slot0(0, nomSCP0.mSCP);
-        NominationTestHandler nom0(slot0);
-
         TestNominationSCP nomSCP1(v1NodeID, qSetNode1);
-        Slot slot1(0, nomSCP1.mSCP);
-        NominationTestHandler nom1(slot1);
 
         int tot = 0;
         for (int g = 0; g < totalIter; g++)
         {
+            Slot slot0(0, nomSCP0.mSCP);
+            NominationTestHandler nom0(slot0);
+
+            Slot slot1(0, nomSCP1.mSCP);
+            NominationTestHandler nom1(slot1);
+
             Value v;
             v.emplace_back(uint8_t(g));
             nom0.setPreviousValue(v);
@@ -365,8 +376,7 @@ TEST_CASE("nomination two nodes win stats", "[scp][!hide]")
             {
                 int tot = nominationLeaders(maxRounds, qSet, qSet);
                 double stats = double(tot * 100) / double(totalIter);
-                CLOG(INFO, "SCP")
-                    << "Win rate for " << maxRounds << " : " << stats;
+                CLOG_INFO(SCP, "Win rate for {} : {}", maxRounds, stats);
             }
         };
 
@@ -393,8 +403,7 @@ TEST_CASE("nomination two nodes win stats", "[scp][!hide]")
             {
                 int tot = nominationLeaders(maxRounds, qSet, qSet);
                 double stats = double(tot * 100) / double(totalIter);
-                CLOG(INFO, "SCP")
-                    << "Win rate for " << maxRounds << " : " << stats;
+                CLOG_INFO(SCP, "Win rate for {} : {}", maxRounds, stats);
             }
         }
         SECTION("v0 is inner node for v1")
@@ -412,8 +421,7 @@ TEST_CASE("nomination two nodes win stats", "[scp][!hide]")
             {
                 int tot = nominationLeaders(maxRounds, qSet0, qSet1);
                 double stats = double(tot * 100) / double(totalIter);
-                CLOG(INFO, "SCP")
-                    << "Win rate for " << maxRounds << " : " << stats;
+                CLOG_INFO(SCP, "Win rate for {} : {}", maxRounds, stats);
             }
         }
     }

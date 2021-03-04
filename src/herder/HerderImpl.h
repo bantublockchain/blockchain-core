@@ -10,10 +10,10 @@
 #include "herder/TransactionQueue.h"
 #include "herder/Upgrades.h"
 #include "util/Timer.h"
+#include "util/UnorderedMap.h"
 #include "util/XDROperators.h"
 #include <deque>
 #include <memory>
-#include <unordered_map>
 #include <vector>
 
 namespace medida
@@ -80,6 +80,7 @@ class HerderImpl : public Herder
     void processSCPQueue();
 
     uint32_t getCurrentLedgerSeq() const override;
+    uint32 getMinLedgerSeqToAskPeers() const override;
 
     SequenceNumber getMaxSeqInPendingTxs(AccountID const&) override;
 
@@ -90,6 +91,8 @@ class HerderImpl : public Herder
 
     void setUpgrades(Upgrades::UpgradeParameters const& upgrades) override;
     std::string getUpgradesJson() override;
+
+    void forceSCPStateIntoSyncWithLastClosedLedger() override;
 
     bool resolveNodeID(std::string const& s, PublicKey& retKey) override;
 
@@ -133,8 +136,10 @@ class HerderImpl : public Herder
 
     void ledgerClosed(bool synchronous);
 
-    void startRebroadcastTimer();
-    void rebroadcast();
+    void maybeTriggerNextLedger(bool synchronous);
+
+    void startOutOfSyncTimer();
+    void outOfSyncRecovery();
     void broadcast(SCPEnvelope const& e);
 
     void processSCPQueueUpToIndex(uint64 slotIndex);
@@ -179,7 +184,7 @@ class HerderImpl : public Herder
 
     VirtualTimer mTriggerTimer;
 
-    VirtualTimer mRebroadcastTimer;
+    VirtualTimer mOutOfSyncTimer;
 
     Application& mApp;
     LedgerManager& mLedgerManager;
@@ -208,6 +213,9 @@ class HerderImpl : public Herder
     // run a background job that re-analyzes the current quorum map.
     void checkAndMaybeReanalyzeQuorumMap();
 
+    // erase all data for ledgers strictly less than ledgerSeq
+    void eraseBelow(uint32 ledgerSeq);
+
     struct QuorumMapIntersectionState
     {
         uint32_t mLastCheckLedger{0};
@@ -235,6 +243,6 @@ class HerderImpl : public Herder
     };
     QuorumMapIntersectionState mLastQuorumMapIntersectionState;
 
-    uint32_t getMinLedgerSeqToRemember();
+    uint32_t getMinLedgerSeqToRemember() const;
 };
 }

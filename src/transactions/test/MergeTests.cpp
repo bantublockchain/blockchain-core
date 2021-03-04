@@ -671,19 +671,17 @@ TEST_CASE("merge", "[tx][merge]")
     SECTION("sponsorships")
     {
         auto sponsoringAcc = root.create("sponsoringAcc", minBalance);
-        for_versions_from(14, *app, [&] {
-            SECTION("with sponsored signers")
-            {
-                // add non-sponsored signer
-                a1.setOptions(setSigner(makeSigner(gateway, 5)));
-
+        auto addSponsoredSigner =
+            [&](TestAccount& dest, int leExt, AccountID const* sponsoringID,
+                uint32_t numSubEntries, int aeExt, uint32_t numSponsoring,
+                uint32_t numSponsored) {
                 // add sponsored signer
                 auto signer = makeSigner(getAccount("S1"), 1);
                 auto tx = transactionFrameFromOps(
-                    app->getNetworkID(), a1,
-                    {sponsoringAcc.op(sponsorFutureReserves(a1)),
-                     a1.op(setOptions(setSigner(signer))),
-                     a1.op(confirmAndClearSponsor())},
+                    app->getNetworkID(), dest,
+                    {sponsoringAcc.op(beginSponsoringFutureReserves(dest)),
+                     dest.op(setOptions(setSigner(signer))),
+                     dest.op(endSponsoringFutureReserves())},
                     {sponsoringAcc});
 
                 {
@@ -692,12 +690,21 @@ TEST_CASE("merge", "[tx][merge]")
                     REQUIRE(tx->checkValid(ltx, 0, 0, 0));
                     REQUIRE(tx->apply(*app, ltx, txm));
 
-                    checkSponsorship(ltx, a1, signer.key, 2,
+                    checkSponsorship(ltx, dest, signer.key, 2,
                                      &sponsoringAcc.getPublicKey());
-                    checkSponsorship(ltx, sponsoringAcc, 0, nullptr, 0, 2, 1,
-                                     0);
+                    checkSponsorship(ltx, sponsoringAcc, leExt, sponsoringID,
+                                     numSubEntries, aeExt, numSponsoring,
+                                     numSponsored);
                     ltx.commit();
                 }
+            };
+
+        for_versions_from(14, *app, [&] {
+            SECTION("with sponsored signers")
+            {
+                // add non-sponsored signer
+                a1.setOptions(setSigner(makeSigner(gateway, 5)));
+                addSponsoredSigner(a1, 0, nullptr, 0, 2, 1, 0);
 
                 a1.merge(b1);
                 LedgerTxn ltx(app->getLedgerTxnRoot());
@@ -710,9 +717,9 @@ TEST_CASE("merge", "[tx][merge]")
                 TestAccount acc1(*app, key);
                 auto tx = transactionFrameFromOps(
                     app->getNetworkID(), sponsoringAcc,
-                    {sponsoringAcc.op(sponsorFutureReserves(acc1)),
-                     sponsoringAcc.op(createAccount(acc1, txfee)),
-                     acc1.op(confirmAndClearSponsor())},
+                    {sponsoringAcc.op(beginSponsoringFutureReserves(acc1)),
+                     sponsoringAcc.op(createAccount(acc1, txfee * 4)),
+                     acc1.op(endSponsoringFutureReserves())},
                     {key});
 
                 {
@@ -726,11 +733,29 @@ TEST_CASE("merge", "[tx][merge]")
                     ltx.commit();
                 }
 
-                acc1.merge(b1);
+                auto merge = [&](bool addSigner) {
+                    if (addSigner)
+                    {
+                        addSponsoredSigner(
+                            acc1, 0, &sponsoringAcc.getPublicKey(), 0, 2, 3, 0);
+                    }
 
-                LedgerTxn ltx(app->getLedgerTxnRoot());
-                checkSponsorship(ltx, sponsoringAcc.getPublicKey(), 0, nullptr,
-                                 0, 2, 0, 0);
+                    acc1.merge(b1);
+
+                    LedgerTxn ltx(app->getLedgerTxnRoot());
+                    checkSponsorship(ltx, sponsoringAcc.getPublicKey(), 0,
+                                     nullptr, 0, 2, 0, 0);
+                };
+
+                SECTION("without sponsored signer")
+                {
+                    merge(false);
+                }
+
+                SECTION("with sponsored signer")
+                {
+                    merge(true);
+                }
             }
 
             SECTION("is sponsor error")
@@ -743,9 +768,9 @@ TEST_CASE("merge", "[tx][merge]")
                 {
                     auto tx = transactionFrameFromOps(
                         app->getNetworkID(), a1,
-                        {a1.op(sponsorFutureReserves(b1)),
+                        {a1.op(beginSponsoringFutureReserves(b1)),
                          a1.op(accountMerge(b1)),
-                         b1.op(confirmAndClearSponsor())},
+                         b1.op(endSponsoringFutureReserves())},
                         {b1});
 
                     LedgerTxn ltx(app->getLedgerTxnRoot());
@@ -764,9 +789,9 @@ TEST_CASE("merge", "[tx][merge]")
                     auto cur1 = makeAsset(root, "CUR1");
                     auto tx = transactionFrameFromOps(
                         app->getNetworkID(), a1,
-                        {sponsoringAcc.op(sponsorFutureReserves(a1)),
+                        {sponsoringAcc.op(beginSponsoringFutureReserves(a1)),
                          a1.op(changeTrust(cur1, 1000)),
-                         a1.op(confirmAndClearSponsor())},
+                         a1.op(endSponsoringFutureReserves())},
                         {sponsoringAcc});
 
                     {

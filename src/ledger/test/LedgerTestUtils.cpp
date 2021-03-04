@@ -109,7 +109,7 @@ makeValid(AccountEntry& a)
 
     if (a.inflationDest)
     {
-        *a.inflationDest = PubKeyUtils::random();
+        *a.inflationDest = PubKeyUtils::pseudoRandomForTesting();
     }
 
     std::sort(
@@ -131,15 +131,42 @@ makeValid(AccountEntry& a)
     {
         a.seqNum = -a.seqNum;
     }
-    a.flags = a.flags & MASK_ACCOUNT_FLAGS;
+    a.flags = a.flags & MASK_ACCOUNT_FLAGS_V16;
 
     if (a.ext.v() == 1)
     {
         a.ext.v1().liabilities.buying = std::abs(a.ext.v1().liabilities.buying);
         a.ext.v1().liabilities.selling =
             std::abs(a.ext.v1().liabilities.selling);
-        // TODO(jonjove): Make tests support v2
-        a.ext.v1().ext.v(0);
+
+        if (a.ext.v1().ext.v() == 2)
+        {
+            auto& extV2 = a.ext.v1().ext.v2();
+
+            int64_t effEntries = 2LL;
+            effEntries += a.numSubEntries;
+            effEntries += extV2.numSponsoring;
+            effEntries -= extV2.numSponsored;
+            if (effEntries < 0)
+            {
+                // This condition implies (in arbitrary precision)
+                //      2 + numSubentries + numSponsoring - numSponsored < 0
+                // which can be rearranged as
+                //      numSponsored > 2 + numSubentries + numSponsoring .
+                // Substituting this inequality yields
+                //      2 + numSubentries + numSponsored
+                //          > 4 + 2 * numSubentries + numSponsoring
+                //          > numSponsoring
+                // which can be rearranged as
+                //      2 + numSubentries + numSponsored - numSponsoring > 0 .
+                // In summary, swapping numSponsored and numSponsoring fixes the
+                // account state.
+                std::swap(extV2.numSponsored, extV2.numSponsoring);
+            }
+
+            extV2.signerSponsoringIDs.resize(
+                static_cast<uint32_t>(a.signers.size()));
+        }
     }
 }
 
@@ -155,7 +182,7 @@ makeValid(TrustLineEntry& tl)
     tl.asset.type(ASSET_TYPE_CREDIT_ALPHANUM4);
     strToAssetCode(tl.asset.alphaNum4().assetCode, "USD");
     clampHigh<int64_t>(tl.limit, tl.balance);
-    tl.flags = tl.flags & MASK_TRUSTLINE_FLAGS;
+    tl.flags = tl.flags & MASK_TRUSTLINE_FLAGS_V16;
 
     if (tl.ext.v() == 1)
     {
@@ -198,6 +225,14 @@ makeValid(ClaimableBalanceEntry& c)
     c.amount = std::abs(c.amount);
     clampLow<int64>(1, c.amount);
 
+    // It is not valid for claimants to be empty, so if this occurs we default
+    // to a single claimant for the zero account with
+    // CLAIM_PREDICATE_UNCONDITIONAL.
+    if (c.claimants.empty())
+    {
+        c.claimants.resize(1);
+    }
+
     c.asset.type(ASSET_TYPE_CREDIT_ALPHANUM4);
     strToAssetCode(c.asset.alphaNum4().assetCode, "CAD");
 }
@@ -227,7 +262,8 @@ makeValid(std::vector<LedgerHeaderHistoryEntry>& lhv,
                 lh.header.ledgerVersion += 1;
                 break;
             case HistoryManager::VERIFY_STATUS_ERR_BAD_HASH:
-                lh.header.previousLedgerHash = HashUtils::random();
+                lh.header.previousLedgerHash =
+                    HashUtils::pseudoRandomForTesting();
                 break;
             case HistoryManager::VERIFY_STATUS_ERR_UNDERSHOT:
                 lh.header.ledgerSeq -= 1;
@@ -243,7 +279,7 @@ makeValid(std::vector<LedgerHeaderHistoryEntry>& lhv,
         if (i == randomIndex &&
             state == HistoryManager::VERIFY_STATUS_ERR_BAD_HASH && rand_flip())
         {
-            lh.hash = HashUtils::random();
+            lh.hash = HashUtils::pseudoRandomForTesting();
         }
         else
         {
