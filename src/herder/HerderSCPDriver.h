@@ -6,6 +6,7 @@
 
 #include "herder/Herder.h"
 #include "herder/TxSetFrame.h"
+#include "medida/timer.h"
 #include "scp/SCPDriver.h"
 #include "xdr/Stellar-ledger.h"
 
@@ -13,7 +14,6 @@ namespace medida
 {
 class Counter;
 class Meter;
-class Timer;
 class Histogram;
 }
 
@@ -112,6 +112,9 @@ class HerderSCPDriver : public SCPDriver
                     std::chrono::milliseconds timeout,
                     std::function<void()> cb) override;
 
+    // hashing support
+    Hash getHashOf(std::vector<xdr::opaque_vec<>> const& vals) const override;
+
     // core SCP
     ValueWrapperPtr
     combineCandidates(uint64_t slotIndex,
@@ -164,6 +167,10 @@ class HerderSCPDriver : public SCPDriver
     // semantics change?
     bool curProtocolPreservesTxSetCloseTimeAffinity() const;
 
+    double getExternalizeLag(NodeID const& id) const;
+
+    Json::Value getQsetLagInfo(bool summary, bool fullKeys);
+
   private:
     Application& mApp;
     HerderImpl& mHerder;
@@ -201,6 +208,9 @@ class HerderSCPDriver : public SCPDriver
     medida::Histogram& mNominateTimeout;
     // Prepare timeouts per ledger
     medida::Histogram& mPrepareTimeout;
+
+    // Externalize lag tracking for nodes in qset
+    UnorderedMap<NodeID, medida::Timer> mQSetLag;
 
     struct SCPTiming
     {

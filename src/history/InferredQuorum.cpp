@@ -17,10 +17,10 @@ InferredQuorum::InferredQuorum(QuorumTracker::QuorumMap const& qmap)
     for (auto const& pair : qmap)
     {
         notePubKey(pair.first);
-        if (pair.second)
+        if (pair.second.mQuorumSet)
         {
-            noteQset(*pair.second);
-            Hash qSetHash = sha256(xdr::xdr_to_opaque(*pair.second));
+            noteQset(*(pair.second.mQuorumSet));
+            Hash qSetHash = xdrSha256(*(pair.second.mQuorumSet));
             noteQsetHash(pair.first, qSetHash);
         }
     }
@@ -74,7 +74,7 @@ InferredQuorum::noteQsetHash(PublicKey const& pk, Hash const& qsetHash)
 void
 InferredQuorum::noteQset(SCPQuorumSet const& qset)
 {
-    Hash qSetHash = sha256(xdr::xdr_to_opaque(qset));
+    Hash qSetHash = xdrSha256(qset);
     if (mQsets.find(qSetHash) == mQsets.end())
     {
         mQsets.insert(std::make_pair(qSetHash, qset));
@@ -182,14 +182,14 @@ InferredQuorum::getQuorumMap() const
     QuorumTracker::QuorumMap qm;
     for (auto const& pair : mQsetHashes)
     {
-        qm[pair.first] = nullptr;
+        qm[pair.first] = QuorumTracker::NodeInfo{nullptr, 0};
         for (auto i = pair.second.rbegin(); i != pair.second.rend(); ++i)
         {
             auto qi = mQsets.find(*i);
             if (qi != mQsets.end())
             {
                 SCPQuorumSetPtr p = std::make_shared<SCPQuorumSet>(qi->second);
-                qm[pair.first] = p;
+                qm[pair.first] = QuorumTracker::NodeInfo{p, 0};
                 break;
             }
         }

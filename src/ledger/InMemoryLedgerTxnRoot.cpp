@@ -32,10 +32,10 @@ InMemoryLedgerTxnRoot::rollbackChild()
 {
 }
 
-std::unordered_map<LedgerKey, LedgerEntry>
+UnorderedMap<LedgerKey, LedgerEntry>
 InMemoryLedgerTxnRoot::getAllOffers()
 {
-    return std::unordered_map<LedgerKey, LedgerEntry>();
+    return UnorderedMap<LedgerKey, LedgerEntry>();
 }
 
 std::shared_ptr<LedgerEntry const>
@@ -51,11 +51,11 @@ InMemoryLedgerTxnRoot::getBestOffer(Asset const& buying, Asset const& selling,
     return nullptr;
 }
 
-std::unordered_map<LedgerKey, LedgerEntry>
+UnorderedMap<LedgerKey, LedgerEntry>
 InMemoryLedgerTxnRoot::getOffersByAccountAndAsset(AccountID const& account,
                                                   Asset const& asset)
 {
-    return std::unordered_map<LedgerKey, LedgerEntry>();
+    return UnorderedMap<LedgerKey, LedgerEntry>();
 }
 
 LedgerHeader const&
@@ -71,8 +71,8 @@ InMemoryLedgerTxnRoot::getInflationWinners(size_t maxWinners,
     return std::vector<InflationWinner>();
 }
 
-std::shared_ptr<GeneralizedLedgerEntry const>
-InMemoryLedgerTxnRoot::getNewestVersion(GeneralizedLedgerKey const& key) const
+std::shared_ptr<InternalLedgerEntry const>
+InMemoryLedgerTxnRoot::getNewestVersion(InternalLedgerKey const& key) const
 {
     return nullptr;
 }
@@ -128,8 +128,16 @@ InMemoryLedgerTxnRoot::getPrefetchHitRate() const
 }
 
 uint32_t
-InMemoryLedgerTxnRoot::prefetch(std::unordered_set<LedgerKey> const& keys)
+InMemoryLedgerTxnRoot::prefetch(UnorderedSet<LedgerKey> const& keys)
 {
     return 0;
 }
+
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+void
+InMemoryLedgerTxnRoot::resetForFuzzer()
+{
+    abort();
+}
+#endif // FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 }

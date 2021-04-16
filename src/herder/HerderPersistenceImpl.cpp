@@ -44,7 +44,7 @@ HerderPersistenceImpl::saveSCPHistory(uint32_t seq,
         return;
     }
 
-    auto usedQSets = std::unordered_map<Hash, SCPQuorumSetPtr>{};
+    auto usedQSets = UnorderedMap<Hash, SCPQuorumSetPtr>{};
     auto& db = mApp.getDatabase();
 
     soci::transaction txscope(db.getSession());
@@ -99,13 +99,13 @@ HerderPersistenceImpl::saveSCPHistory(uint32_t seq,
     for (auto const& p : qmap)
     {
         auto const& nodeID = p.first;
-        if (!p.second)
+        if (!p.second.mQuorumSet)
         {
             // skip node if we don't have its quorum set
             continue;
         }
-        auto qSetH = sha256(xdr::xdr_to_opaque(*p.second));
-        usedQSets.insert(std::make_pair(qSetH, p.second));
+        auto qSetH = xdrSha256(*(p.second.mQuorumSet));
+        usedQSets.insert(std::make_pair(qSetH, p.second.mQuorumSet));
 
         std::string nodeIDStrKey = KeyUtils::toStrKey(nodeID);
         std::string qSetHHex(binToHex(qSetH));
@@ -221,7 +221,7 @@ HerderPersistence::copySCPHistoryToStream(Database& db, soci::session& sess,
     size_t n = 0;
 
     // all known quorum sets
-    std::unordered_map<Hash, SCPQuorumSet> qSets;
+    UnorderedMap<Hash, SCPQuorumSet> qSets;
 
     for (uint32_t curLedgerSeq = begin; curLedgerSeq < end; curLedgerSeq++)
     {

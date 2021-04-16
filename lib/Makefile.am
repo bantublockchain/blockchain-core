@@ -23,6 +23,10 @@ libsoci_a_SOURCES += $(SOCI_PG_FILES)
 endif # USE_POSTGRES
 
 lib3rdparty_a_SOURCES = $(UTIL_FILES) $(ASIO_CXX_FILES) $(JSON_FILES) $(SQLITE3_FILES)
+if USE_SPDLOG
+lib3rdparty_a_SOURCES += $(SPDLOG_FILES)
+endif # !USE_SPDLOG
+
 if USE_TRACY
 lib3rdparty_a_SOURCES += $(TRACY_CXX_FILES)
 endif # USE_TRACY

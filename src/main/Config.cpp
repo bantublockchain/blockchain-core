@@ -18,6 +18,8 @@
 #include "util/XDROperators.h"
 #include "util/types.h"
 
+#include "util/UnorderedSet.h"
+#include <fmt/chrono.h>
 #include <fmt/format.h>
 #include <functional>
 #include <sstream>
@@ -25,8 +27,11 @@
 
 namespace stellar
 {
-const uint32 Config::CURRENT_LEDGER_PROTOCOL_VERSION = 14;
-const uint32 Config::MAXIMUM_QUORUM_NESTING_LEVEL = 4;
+const uint32 Config::CURRENT_LEDGER_PROTOCOL_VERSION = 15
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+                                                       + 1
+#endif
+    ;
 
 // Options that must only be used for testing
 static const std::unordered_set<std::string> TESTING_ONLY_OPTIONS = {
@@ -93,6 +98,7 @@ Config::Config() : NODE_SEED(SecretKey::random())
     MODE_USES_IN_MEMORY_LEDGER = false;
     MODE_STORES_HISTORY = true;
     MODE_DOES_CATCHUP = true;
+    MODE_AUTO_STARTS_OVERLAY = true;
     OP_APPLY_SLEEP_TIME_FOR_TESTING = 0;
 
     FORCE_SCP = false;
@@ -100,8 +106,8 @@ Config::Config() : NODE_SEED(SecretKey::random())
 
     MAXIMUM_LEDGER_CLOSETIME_DRIFT = 50;
 
-    OVERLAY_PROTOCOL_MIN_VERSION = 13;
-    OVERLAY_PROTOCOL_VERSION = 14;
+    OVERLAY_PROTOCOL_MIN_VERSION = 15;
+    OVERLAY_PROTOCOL_VERSION = 15;
 
     VERSION_STR = STELLAR_CORE_VERSION;
 
@@ -127,7 +133,7 @@ Config::Config() : NODE_SEED(SecretKey::random())
     MAX_SLOTS_TO_REMEMBER = 12;
     METADATA_OUTPUT_STREAM = "";
 
-    LOG_FILE_PATH = "stellar-core.%datetime{%Y.%M.%d-%H:%m:%s}.log";
+    LOG_FILE_PATH = "stellar-core-{datetime:%Y-%m-%d_%H-%M-%S}.log";
     BUCKET_DIR_PATH = "buckets";
 
     TESTING_UPGRADE_DESIRED_FEE = LedgerManager::GENESIS_LEDGER_BASE_FEE;
@@ -147,15 +153,8 @@ Config::Config() : NODE_SEED(SecretKey::random())
     PEER_TIMEOUT = 30;
     PEER_STRAGGLER_TIMEOUT = 120;
 
-    // time spent picking up items from a connection all at once, this should be
-    // picked high enough that we can pick up as many items as possible but low
-    // enough that we give a chance to cycle through all connections in a
-    // reasonable amount of time. 10ms would allow to cycle through 100
-    // connections in one second
-    MAX_BATCH_READ_PERIOD_MS = std::chrono::milliseconds(10);
-    // during transaction spikes, we want to increase the chance of picking up
-    // items behind transactions
-    MAX_BATCH_READ_COUNT = 1000;
+    FLOOD_OP_RATE_PER_LEDGER = 1.0;
+    FLOOD_TX_PERIOD_MS = 200;
 
     MAX_BATCH_WRITE_COUNT = 1024;
     MAX_BATCH_WRITE_BYTES = 1 * 1024 * 1024;
@@ -180,7 +179,6 @@ Config::Config() : NODE_SEED(SecretKey::random())
     DATABASE = SecretValue{"sqlite3://:memory:"};
 
     ENTRY_CACHE_SIZE = 100000;
-    BEST_OFFERS_CACHE_SIZE = 64;
     PREFETCH_BATCH_SIZE = 1000;
 
 #ifdef BUILD_TESTS
@@ -201,6 +199,16 @@ readBool(ConfigItem const& item)
         throw std::invalid_argument(fmt::format("invalid {}", item.first));
     }
     return item.second->as<bool>()->get();
+}
+
+double
+readDouble(ConfigItem const& item)
+{
+    if (!item.second->as<double>())
+    {
+        throw std::invalid_argument(fmt::format("invalid {}", item.first));
+    }
+    return item.second->as<double>()->get();
 }
 
 std::string
@@ -250,18 +258,56 @@ readInt(ConfigItem const& item, T min = std::numeric_limits<T>::min(),
     }
     return static_cast<T>(v);
 }
+
+template <typename T>
+std::vector<T>
+readXdrEnumArray(ConfigItem const& item)
+{
+    UnorderedMap<std::string, T> enumNames;
+    for (auto enumVal : xdr::xdr_traits<T>::enum_values())
+    {
+        auto enumNameCharPtr =
+            xdr::xdr_traits<T>::enum_name(static_cast<T>(enumVal));
+        assert(enumNameCharPtr);
+        enumNames.emplace(enumNameCharPtr, static_cast<T>(enumVal));
+    }
+
+    std::vector<T> result;
+    if (!item.second->is_array())
+    {
+        throw std::invalid_argument(
+            fmt::format("{} must be an array", item.first));
+    }
+    for (auto v : item.second->as_array()->get())
+    {
+        if (!v->as<std::string>())
+        {
+            throw std::invalid_argument(
+                fmt::format("invalid element of {}", item.first));
+        }
+
+        auto name = v->as<std::string>()->get();
+        if (enumNames.find(name) == enumNames.end())
+        {
+            throw std::invalid_argument(
+                fmt::format("invalid element of {}", item.first));
+        }
+        result.push_back(enumNames[name]);
+    }
+    return result;
+}
 }
 
 void
 Config::loadQset(std::shared_ptr<cpptoml::table> group, SCPQuorumSet& qset,
-                 int level)
+                 uint32 level)
 {
     if (!group)
     {
         throw std::invalid_argument("invalid entry in quorum set definition");
     }
 
-    if (level > Config::MAXIMUM_QUORUM_NESTING_LEVEL)
+    if (level > MAXIMUM_QUORUM_NESTING_LEVEL)
     {
         throw std::invalid_argument("too many levels in quorum set");
     }
@@ -375,7 +421,7 @@ Config::parseQuality(std::string const& q) const
 std::vector<Config::ValidatorEntry>
 Config::parseValidators(
     std::shared_ptr<cpptoml::base> validators,
-    std::unordered_map<std::string, ValidatorQuality> const& domainQualityMap)
+    UnorderedMap<std::string, ValidatorQuality> const& domainQualityMap)
 {
     std::vector<ValidatorEntry> res;
 
@@ -482,10 +528,10 @@ Config::parseValidators(
     return res;
 }
 
-std::unordered_map<std::string, Config::ValidatorQuality>
+UnorderedMap<std::string, Config::ValidatorQuality>
 Config::parseDomainsQuality(std::shared_ptr<cpptoml::base> domainsQuality)
 {
-    std::unordered_map<std::string, ValidatorQuality> res;
+    UnorderedMap<std::string, ValidatorQuality> res;
     auto tarr = domainsQuality->as_table_array();
     if (!tarr)
     {
@@ -537,7 +583,7 @@ Config::parseDomainsQuality(std::shared_ptr<cpptoml::base> domainsQuality)
 void
 Config::load(std::string const& filename)
 {
-    if (filename != "-" && !fs::exists(filename))
+    if (filename != Config::STDIN_SPECIAL_NAME && !fs::exists(filename))
     {
         std::string s;
         s = "No config file ";
@@ -545,19 +591,20 @@ Config::load(std::string const& filename)
         throw std::invalid_argument(s);
     }
 
-    LOG(DEBUG) << "Loading config from: " << filename;
+    LOG_DEBUG(DEFAULT_LOG, "Loading config from: {}", filename);
     try
     {
-        if (filename == "-")
+        if (filename == Config::STDIN_SPECIAL_NAME)
         {
             load(std::cin);
         }
         else
         {
             std::ifstream ifs(filename);
-            if (!ifs.is_open())
+            if (!ifs)
             {
-                throw std::runtime_error("could not open file");
+                throw std::runtime_error(
+                    fmt::format("Error opening file {}", filename));
             }
             ifs.exceptions(std::ios::badbit);
             load(ifs);
@@ -585,7 +632,7 @@ Config::load(std::istream& in)
 void
 Config::addSelfToValidators(
     std::vector<ValidatorEntry>& validators,
-    std::unordered_map<std::string, ValidatorQuality> const& domainQualityMap)
+    UnorderedMap<std::string, ValidatorQuality> const& domainQualityMap)
 {
     auto it = domainQualityMap.find(NODE_HOME_DOMAIN);
     ValidatorEntry self;
@@ -619,15 +666,16 @@ Config::verifyHistoryValidatorsBlocking(
     }
     if (!LocalNode::isVBlocking(QUORUM_SET, archives))
     {
-        LOG(WARNING) << "Quorum can be reached without validators with "
-                        "an archive";
+        LOG_WARNING(DEFAULT_LOG,
+                    "Quorum can be reached without validators with "
+                    "an archive");
         if (!UNSAFE_QUORUM)
         {
-            LOG(ERROR) << "Potentially unsafe configuration: "
-                          "validators with known archives should be "
-                          "included in all quorums. If this is really "
-                          "what you want, set UNSAFE_QUORUM=true. Be "
-                          "sure you know what you are doing!";
+            LOG_ERROR(DEFAULT_LOG, "Potentially unsafe configuration: "
+                                   "validators with known archives should be "
+                                   "included in all quorums. If this is really "
+                                   "what you want, set UNSAFE_QUORUM=true. Be "
+                                   "sure you know what you are doing!");
             throw std::invalid_argument("SCP unsafe");
         }
     }
@@ -641,15 +689,16 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
         {
             if (item.second->template as<bool>()->get())
             {
-                LOG(INFO) << fmt::format(
-                    "{} enabled in configuration file - {}", item.first,
-                    message);
+                LOG_INFO(DEFAULT_LOG, "{}",
+                         fmt::format("{} enabled in configuration file - {}",
+                                     item.first, message));
             }
         }
         else
         {
-            LOG(INFO) << fmt::format("{} set in configuration file - {}",
-                                     item.first, message);
+            LOG_INFO(DEFAULT_LOG, "{}",
+                     fmt::format("{} set in configuration file - {}",
+                                 item.first, message));
         }
     };
 
@@ -660,13 +709,13 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
             throw std::runtime_error("Could not parse toml");
         }
         std::vector<ValidatorEntry> validators;
-        std::unordered_map<std::string, ValidatorQuality> domainQualityMap;
+        UnorderedMap<std::string, ValidatorQuality> domainQualityMap;
 
         // cpptoml returns the items in non-deterministic order
         // so we need to process items that are potential dependencies first
         for (auto& item : *t)
         {
-            LOG(DEBUG) << "Config item: " << item.first;
+            LOG_DEBUG(DEFAULT_LOG, "Config item: {}", item.first);
             if (TESTING_ONLY_OPTIONS.count(item.first) > 0)
             {
                 logIfSet(item,
@@ -684,7 +733,7 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
             }
             else if (item.first == "HTTP_PORT")
             {
-                HTTP_PORT = readInt<unsigned short>(item, 1);
+                HTTP_PORT = readInt<unsigned short>(item);
             }
             else if (item.first == "HTTP_MAX_CLIENT")
             {
@@ -778,6 +827,10 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
             {
                 LOG_FILE_PATH = readString(item);
             }
+            else if (item.first == "LOG_COLOR")
+            {
+                LOG_COLOR = readBool(item);
+            }
             else if (item.first == "TMP_DIR_PATH")
             {
                 throw std::invalid_argument("TMP_DIR_PATH is not supported "
@@ -839,15 +892,6 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
                 PEER_STRAGGLER_TIMEOUT = readInt<unsigned short>(
                     item, 1, std::numeric_limits<unsigned short>::max());
             }
-            else if (item.first == "MAX_BATCH_READ_PERIOD_MS")
-            {
-                MAX_BATCH_READ_PERIOD_MS =
-                    std::chrono::milliseconds(readInt<int>(item, 1));
-            }
-            else if (item.first == "MAX_BATCH_READ_COUNT")
-            {
-                MAX_BATCH_READ_COUNT = readInt<int>(item, 1);
-            }
             else if (item.first == "MAX_BATCH_WRITE_COUNT")
             {
                 MAX_BATCH_WRITE_COUNT = readInt<int>(item, 1);
@@ -855,6 +899,19 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
             else if (item.first == "MAX_BATCH_WRITE_BYTES")
             {
                 MAX_BATCH_WRITE_BYTES = readInt<int>(item, 1);
+            }
+            else if (item.first == "FLOOD_OP_RATE_PER_LEDGER")
+            {
+                FLOOD_OP_RATE_PER_LEDGER = readDouble(item);
+                if (FLOOD_OP_RATE_PER_LEDGER <= 0.0)
+                {
+                    throw std::invalid_argument(
+                        "bad value for FLOOD_OP_RATE_PER_LEDGER");
+                }
+            }
+            else if (item.first == "FLOOD_TX_PERIOD_MS")
+            {
+                FLOOD_TX_PERIOD_MS = readInt<int>(item, 0);
             }
             else if (item.first == "PREFERRED_PEERS")
             {
@@ -905,7 +962,8 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
                 {
                     for (auto const& archive : *hist)
                     {
-                        LOG(DEBUG) << "History archive: " << archive.first;
+                        LOG_DEBUG(DEFAULT_LOG, "History archive: {}",
+                                  archive.first);
                         auto tab = archive.second->as_table();
                         if (!tab)
                         {
@@ -961,10 +1019,6 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
             {
                 ENTRY_CACHE_SIZE = readInt<uint32_t>(item);
             }
-            else if (item.first == "BEST_OFFERS_CACHE_SIZE")
-            {
-                BEST_OFFERS_CACHE_SIZE = readInt<uint32_t>(item);
-            }
             else if (item.first == "PREFETCH_BATCH_SIZE")
             {
                 PREFETCH_BATCH_SIZE = readInt<uint32_t>(item);
@@ -985,6 +1039,12 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
             {
                 // processed later (may depend on previously defined public
                 // keys)
+            }
+            else if (item.first ==
+                     "EXCLUDE_TRANSACTIONS_CONTAINING_OPERATION_TYPE")
+            {
+                EXCLUDE_TRANSACTIONS_CONTAINING_OPERATION_TYPE =
+                    readXdrEnumArray<OperationType>(item);
             }
             else
             {
@@ -1030,16 +1090,18 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
                 loadQset(qset->as_table(), QUORUM_SET, 0);
             }
             auto s = toString(QUORUM_SET);
-            LOG(INFO) << "Using QUORUM_SET: " << s;
+            LOG_INFO(DEFAULT_LOG, "Using QUORUM_SET: {}", s);
             if (s != autoQSetStr && !validators.empty())
             {
-                LOG(WARNING) << "Differs from generated: " << autoQSetStr;
+                LOG_WARNING(DEFAULT_LOG, "Differs from generated: {}",
+                            autoQSetStr);
                 if (!UNSAFE_QUORUM)
                 {
-                    LOG(ERROR) << "Can't override [[VALIDATORS]] with "
-                                  "QUORUM_SET unless you also set "
-                                  "UNSAFE_QUORUM=true. Be sure you know what "
-                                  "you are doing!";
+                    LOG_ERROR(DEFAULT_LOG,
+                              "Can't override [[VALIDATORS]] with "
+                              "QUORUM_SET unless you also set "
+                              "UNSAFE_QUORUM=true. Be sure you know what "
+                              "you are doing!");
                     throw std::invalid_argument("SCP unsafe");
                 }
             }
@@ -1049,11 +1111,11 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
         }
         else
         {
-            LOG(INFO) << "Generated QUORUM_SET: " << autoQSetStr;
+            LOG_INFO(DEFAULT_LOG, "Generated QUORUM_SET: {}", autoQSetStr);
             QUORUM_SET = autoQSet;
             verifyHistoryValidatorsBlocking(validators);
             // count the number of domains
-            std::unordered_set<std::string> domains;
+            UnorderedSet<std::string> domains;
             for (auto const& v : validators)
             {
                 domains.insert(v.mHomeDomain);
@@ -1176,23 +1238,27 @@ Config::adjust()
 void
 Config::logBasicInfo()
 {
-    LOG(INFO) << "Connection effective settings:";
-    LOG(INFO) << "TARGET_PEER_CONNECTIONS: " << TARGET_PEER_CONNECTIONS;
-    LOG(INFO) << "MAX_ADDITIONAL_PEER_CONNECTIONS: "
-              << MAX_ADDITIONAL_PEER_CONNECTIONS;
-    LOG(INFO) << "MAX_PENDING_CONNECTIONS: " << MAX_PENDING_CONNECTIONS;
-    LOG(INFO) << "MAX_OUTBOUND_PENDING_CONNECTIONS: "
-              << MAX_OUTBOUND_PENDING_CONNECTIONS;
-    LOG(INFO) << "MAX_INBOUND_PENDING_CONNECTIONS: "
-              << MAX_INBOUND_PENDING_CONNECTIONS;
+    LOG_INFO(DEFAULT_LOG, "Connection effective settings:");
+    LOG_INFO(DEFAULT_LOG, "TARGET_PEER_CONNECTIONS: {}",
+             TARGET_PEER_CONNECTIONS);
+    LOG_INFO(DEFAULT_LOG, "MAX_ADDITIONAL_PEER_CONNECTIONS: {}",
+             MAX_ADDITIONAL_PEER_CONNECTIONS);
+    LOG_INFO(DEFAULT_LOG, "MAX_PENDING_CONNECTIONS: {}",
+             MAX_PENDING_CONNECTIONS);
+    LOG_INFO(DEFAULT_LOG, "MAX_OUTBOUND_PENDING_CONNECTIONS: {}",
+             MAX_OUTBOUND_PENDING_CONNECTIONS);
+    LOG_INFO(DEFAULT_LOG, "MAX_INBOUND_PENDING_CONNECTIONS: {}",
+             MAX_INBOUND_PENDING_CONNECTIONS);
 }
 
 void
 Config::validateConfig(ValidationThresholdLevels thresholdLevel)
 {
     std::set<NodeID> nodes;
-    LocalNode::forAllNodes(QUORUM_SET,
-                           [&](NodeID const& n) { nodes.insert(n); });
+    LocalNode::forAllNodes(QUORUM_SET, [&](NodeID const& n) {
+        nodes.insert(n);
+        return true;
+    });
 
     if (nodes.empty())
     {
@@ -1214,18 +1280,20 @@ Config::validateConfig(ValidationThresholdLevels thresholdLevel)
                                                  QUORUM_SET.innerSets.size());
         FAILURE_SAFETY = topLevelCount - minSize;
 
-        LOG(INFO) << "Assigning calculated value of " << FAILURE_SAFETY
-                  << " to FAILURE_SAFETY";
+        LOG_INFO(DEFAULT_LOG,
+                 "Assigning calculated value of {} to FAILURE_SAFETY",
+                 FAILURE_SAFETY);
     }
 
     try
     {
         if (FAILURE_SAFETY >= static_cast<int32_t>(r.size()))
         {
-            LOG(ERROR) << "Not enough nodes / thresholds too strict in your "
-                          "Quorum set to ensure your desired level of "
-                          "FAILURE_SAFETY. Reduce FAILURE_SAFETY or fix "
-                          "quorum set";
+            LOG_ERROR(DEFAULT_LOG,
+                      "Not enough nodes / thresholds too strict in your "
+                      "Quorum set to ensure your desired level of "
+                      "FAILURE_SAFETY. Reduce FAILURE_SAFETY or fix "
+                      "quorum set");
             throw std::invalid_argument(
                 "FAILURE_SAFETY incompatible with QUORUM_SET");
         }
@@ -1234,35 +1302,35 @@ Config::validateConfig(ValidationThresholdLevels thresholdLevel)
         {
             if (FAILURE_SAFETY == 0)
             {
-                LOG(ERROR)
-                    << "Can't have FAILURE_SAFETY=0 unless you also set "
-                       "UNSAFE_QUORUM=true. Be sure you know what you are "
-                       "doing!";
+                LOG_ERROR(DEFAULT_LOG,
+                          "Can't have FAILURE_SAFETY=0 unless you also set "
+                          "UNSAFE_QUORUM=true. Be sure you know what you are "
+                          "doing!");
                 throw std::invalid_argument("SCP unsafe");
             }
 
             if (QUORUM_SET.threshold < minSize)
             {
-                LOG(ERROR) << "Your THRESHOLD_PERCENTAGE is too low. If you "
-                              "really want this set UNSAFE_QUORUM=true. Be "
-                              "sure you know what you are doing!";
+                LOG_ERROR(DEFAULT_LOG,
+                          "Your THRESHOLD_PERCENTAGE is too low. If you "
+                          "really want this set UNSAFE_QUORUM=true. Be "
+                          "sure you know what you are doing!");
                 throw std::invalid_argument("SCP unsafe");
             }
         }
     }
     catch (...)
     {
-        LOG(INFO) << " Current QUORUM_SET breaks with " << r.size()
-                  << " failures";
+        LOG_INFO(DEFAULT_LOG, " Current QUORUM_SET breaks with {} failures",
+                 r.size());
         throw;
     }
 
-    if (!isQuorumSetSane(QUORUM_SET, !UNSAFE_QUORUM))
+    const char* errString = nullptr;
+    if (!isQuorumSetSane(QUORUM_SET, !UNSAFE_QUORUM, errString))
     {
-        LOG(FATAL) << fmt::format("Invalid QUORUM_SET: check nesting, "
-                                  "duplicate entries and thresholds (must be "
-                                  "between {} and 100)",
-                                  UNSAFE_QUORUM ? 1 : 51);
+        LOG_FATAL(DEFAULT_LOG, "{}",
+                  fmt::format("Invalid QUORUM_SET: {}", errString));
         throw std::invalid_argument("Invalid QUORUM_SET");
     }
 }
@@ -1566,4 +1634,6 @@ Config::toString(SCPQuorumSet const& qset)
     Json::StyledWriter fw;
     return fw.write(json);
 }
+
+std::string const Config::STDIN_SPECIAL_NAME = "/dev/stdin";
 }

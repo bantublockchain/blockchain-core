@@ -112,11 +112,12 @@ class SCPDriver
     // the current slot to be marked as a non validating slot: the local node
     // will abstain from emiting its position.
     // validation can be *more* restrictive during nomination as needed
+    // NB: validation levels are ordered
     enum ValidationLevel
     {
-        kInvalidValue,        // value is invalid for sure
-        kFullyValidatedValue, // value is valid for sure
-        kMaybeValidValue      // value may be valid
+        kInvalidValue = 0,       // value is invalid for sure
+        kMaybeValidValue = 1,    // value may be valid
+        kFullyValidatedValue = 2 // value is valid for sure
     };
     virtual ValidationLevel
     validateValue(uint64 slotIndex, Value const& value, bool nomination)
@@ -145,6 +146,10 @@ class SCPDriver
 
     // `toShortString` converts to the common name of a key if found
     virtual std::string toShortString(PublicKey const& pk) const;
+
+    // `getHashOf` computes the hash for the given vector of byte vector
+    virtual Hash
+    getHashOf(std::vector<xdr::opaque_vec<>> const& vals) const = 0;
 
     // `computeHashNode` is used by the nomination protocol to
     // randomize the order of messages between nodes.
@@ -233,5 +238,10 @@ class SCPDriver
     ballotDidHearFromQuorum(uint64 slotIndex, SCPBallot const& ballot)
     {
     }
+
+  private:
+    uint64
+    hashHelper(uint64 slotIndex, Value const& prev,
+               std::function<void(std::vector<xdr::opaque_vec<>>&)> extra);
 };
 }

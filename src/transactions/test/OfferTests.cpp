@@ -25,12 +25,6 @@
 using namespace stellar;
 using namespace stellar::txtest;
 
-static OperationResult
-getOperationResult(TransactionFrameBasePtr& tx, size_t i)
-{
-    return tx->getResult().result.results()[i];
-}
-
 // Offer that takes multiple other offers and remains
 // Offer selling XLM
 // Offer buying XLM
@@ -2934,9 +2928,6 @@ TEST_CASE("create offer", "[tx][offers]")
                     market.updateOffer(acc1, INT64_MAX,
                                        {usd, idr, Price{1, 1}, 1}),
                     ex_MANAGE_SELL_OFFER_NOT_FOUND);
-                REQUIRE_THROWS_AS(
-                    market.updateOffer(acc1, -1, {usd, idr, Price{1, 1}, 1}),
-                    ex_MANAGE_SELL_OFFER_NOT_FOUND);
             });
         }
 
@@ -2956,9 +2947,6 @@ TEST_CASE("create offer", "[tx][offers]")
                 REQUIRE_THROWS_AS(
                     market.updateOffer(acc1, INT64_MAX,
                                        {usd, idr, Price{1, 1}, 0}),
-                    ex_MANAGE_SELL_OFFER_NOT_FOUND);
-                REQUIRE_THROWS_AS(
-                    market.updateOffer(acc1, -1, {usd, idr, Price{1, 1}, 0}),
                     ex_MANAGE_SELL_OFFER_NOT_FOUND);
             });
         }
@@ -2989,13 +2977,13 @@ TEST_CASE("create offer", "[tx][offers]")
 
     SECTION("crossed sponsored offers")
     {
-        auto doUpdateSponsorship = [&](TestAccount& source, int64_t offerID,
+        auto doRevokeSponsorship = [&](TestAccount& source, int64_t offerID,
                                        TestAccount& sponsor) {
             auto tx = transactionFrameFromOps(
                 app->getNetworkID(), source,
-                {sponsor.op(sponsorFutureReserves(source)),
-                 source.op(updateSponsorship(offerKey(source, offerID))),
-                 source.op(confirmAndClearSponsor())},
+                {sponsor.op(beginSponsoringFutureReserves(source)),
+                 source.op(revokeSponsorship(offerKey(source, offerID))),
+                 source.op(endSponsoringFutureReserves())},
                 {sponsor});
 
             LedgerTxn ltx(app->getLedgerTxnRoot());
@@ -3029,10 +3017,10 @@ TEST_CASE("create offer", "[tx][offers]")
             // This will not update the internal offerID tracker in market
             auto tx = transactionFrameFromOps(
                 app->getNetworkID(), acc,
-                {sponsor->op(sponsorFutureReserves(acc)),
+                {sponsor->op(beginSponsoringFutureReserves(acc)),
                  acc.op(manageOffer(0, state.selling, state.buying, state.price,
                                     state.amount)),
-                 acc.op(confirmAndClearSponsor())},
+                 acc.op(endSponsoringFutureReserves())},
                 {*sponsor});
 
             LedgerTxn ltx(app->getLedgerTxnRoot());
@@ -3106,9 +3094,9 @@ TEST_CASE("create offer", "[tx][offers]")
                             })
                         .key;
 
-                doUpdateSponsorship(a1, o1.offerID, b);
-                doUpdateSponsorship(a1, o2.offerID, b);
-                doUpdateSponsorship(a2, o3.offerID, b);
+                doRevokeSponsorship(a1, o1.offerID, b);
+                doRevokeSponsorship(a1, o2.offerID, b);
+                doRevokeSponsorship(a2, o3.offerID, b);
 
                 SECTION("cross one offer partially")
                 {
@@ -3327,9 +3315,9 @@ TEST_CASE("create offer", "[tx][offers]")
                             })
                         .key;
 
-                doUpdateSponsorship(a1, o1.offerID, a2);
-                doUpdateSponsorship(a1, o2.offerID, a2);
-                doUpdateSponsorship(a2, o3.offerID, a1);
+                doRevokeSponsorship(a1, o1.offerID, a2);
+                doRevokeSponsorship(a1, o2.offerID, a2);
+                doRevokeSponsorship(a2, o3.offerID, a1);
 
                 SECTION("cross one offer partially")
                 {
@@ -3553,9 +3541,9 @@ TEST_CASE("create offer", "[tx][offers]")
                             })
                         .key;
 
-                doUpdateSponsorship(a1, o1.offerID, c);
-                doUpdateSponsorship(a1, o2.offerID, c);
-                doUpdateSponsorship(a2, o3.offerID, c);
+                doRevokeSponsorship(a1, o1.offerID, c);
+                doRevokeSponsorship(a1, o2.offerID, c);
+                doRevokeSponsorship(a2, o3.offerID, c);
 
                 SECTION("cross one offer partially")
                 {
@@ -3752,11 +3740,11 @@ TEST_CASE("create offer", "[tx][offers]")
 
         auto tx = transactionFrameFromOps(
             app->getNetworkID(), acc1,
-            {sponsor.op(sponsorFutureReserves(acc1)),
+            {sponsor.op(beginSponsoringFutureReserves(acc1)),
              acc1.op(manageOffer(0, usd, xlm, Price{1, 1}, 100)),
              acc1.op(manageOffer(0, xlm, usd, Price{2, 1}, 100)),
              acc1.op(manageOffer(0, idr, xlm, Price{1, 1}, 100)),
-             acc1.op(confirmAndClearSponsor())},
+             acc1.op(endSponsoringFutureReserves())},
             {sponsor});
 
         uint64_t offerIdUsdXlm = 0;
@@ -3793,6 +3781,19 @@ TEST_CASE("create offer", "[tx][offers]")
             checkSponsorship(ltx, acc1, 0, &sponsor.getPublicKey(), 3, 2, 0, 1);
             checkSponsorship(ltx, sponsor, 0, nullptr, 0, 2, 1, 0);
         }
+    }
+
+    SECTION("negative offerID")
+    {
+        for_versions_to(14, *app, [&]() {
+            REQUIRE_THROWS_AS(issuer.manageOffer(-1, idr, usd, Price{1, 1}, 1),
+                              ex_MANAGE_SELL_OFFER_NOT_FOUND);
+        });
+
+        for_versions_from(15, *app, [&]() {
+            REQUIRE_THROWS_AS(issuer.manageOffer(-1, idr, usd, Price{1, 1}, 1),
+                              ex_MANAGE_SELL_OFFER_MALFORMED);
+        });
     }
 }
 

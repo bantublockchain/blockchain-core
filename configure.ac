@@ -212,8 +212,8 @@ AS_IF([test "x$enable_afl" = "xyes"], [
 ])
 AM_CONDITIONAL([USE_AFL_FUZZ], [test "x$enable_afl" == "xyes"])
 
-# prefer 5.0 as it's the one we use
-AC_CHECK_PROGS(CLANG_FORMAT, [clang-format-5.0 clang-format])
+# prefer 8 as it's the one we use
+AC_CHECK_PROGS(CLANG_FORMAT, [clang-format-8 clang-format])
 AM_CONDITIONAL([USE_CLANG_FORMAT], [test "x$CLANG_FORMAT" != "x"])
 
 AX_VALGRIND_CHECK
@@ -298,7 +298,7 @@ AC_ARG_ENABLE(tracy,
     AS_HELP_STRING([--enable-tracy],
         [Enable 'tracy' profiler/tracer client stub]))
 AM_CONDITIONAL(USE_TRACY, [test x$enable_tracy = xyes])
-tracy_CFLAGS='-DTRACY_ENABLE -DTRACY_ON_DEMAND -DTRACY_NO_BROADCAST -DTRACY_ONLY_LOCALHOST'
+tracy_CFLAGS='-DTRACY_ENABLE -DTRACY_ON_DEMAND -DTRACY_NO_BROADCAST -DTRACY_ONLY_LOCALHOST -DTRACY_ONLY_IPV4'
 if test x"$enable_tracy" = xyes; then
     case "${host_os}" in
         *darwin*)
@@ -331,6 +331,49 @@ AC_ARG_ENABLE(tracy-capture,
     AS_HELP_STRING([--enable-tracy-capture],
         [Enable 'tracy' profiler/tracer capture program]))
 AM_CONDITIONAL(USE_TRACY_CAPTURE, [test x$enable_tracy_capture = xyes])
+
+AC_ARG_ENABLE(spdlog,
+    AS_HELP_STRING([--disable-spdlog],
+        [Disable spdlog]))
+AM_CONDITIONAL(USE_SPDLOG, [test x$enable_spdlog != xno])
+
+AC_ARG_ENABLE(next-protocol-version-unsafe-for-production,
+    AS_HELP_STRING([--enable-next-protocol-version-unsafe-for-production],
+        [Enable next protocol version UNSAFE FOR PRODUCTION]))
+AM_CONDITIONAL(ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION,
+    [test x$enable_next_protocol_version_unsafe_for_production = xyes])
+
+case "${host_os}" in
+    *darwin*)
+        # libunwind comes standard with the command-line tools on macos
+        AC_DEFINE([HAVE_LIBUNWIND], [1],
+            [Define to 1 if you have the <libunwind.h> header file])
+        ;;
+    *)
+        # Unfortunately libunwind seems to interfere with clang-compiled
+        # exception-handling, at least when linked with libgcc (which is the
+        # default of libcxx and a requirement for libstdc++). I think this is
+        # roughly caused by both libgcc and libunwind providing the C++ EH ABI
+        # symbols but, evidently, interacting with clang-compiled code slightly
+        # differently when ELF-interposed with one another, in the same binary.
+        #
+        # Haven't been able to make a reduced testcase that works. You can check
+        # that this is still a problem by running the stellar-core Catch2-based
+        # unit test suite: many of the tests do REQUIRE_THROWS_AS(...) and
+        # that crashes with libunwind+clang.  Haven't been able to figure out a
+        # workaround either.
+        case "${CXX}" in
+            *clang*)
+                AC_MSG_NOTICE([backtraces disabled due to clang interaction with libunwind])
+            ;;
+            *)
+                PKG_CHECK_MODULES(libunwind, libunwind,
+                    AC_DEFINE([HAVE_LIBUNWIND], [1],
+                              [Define to 1 if you have the <libunwind.h> header file]))
+           ;;
+        esac
+        ;;
+esac
 
 # Need this to pass through ccache for xdrpp, libsodium
 esc() {

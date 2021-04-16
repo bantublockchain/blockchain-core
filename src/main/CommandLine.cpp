@@ -3,6 +3,7 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "main/CommandLine.h"
+#include "bucket/BucketManager.h"
 #include "catchup/CatchupConfiguration.h"
 #include "herder/Herder.h"
 #include "history/HistoryArchiveManager.h"
@@ -57,7 +58,7 @@ class CommandLine
         using Common = std::pair<std::string, bool>;
         static const std::vector<Common> COMMON_OPTIONS;
 
-        el::Level mLogLevel{el::Level::Info};
+        LogLevel mLogLevel{LogLevel::LVL_INFO};
         std::vector<std::string> mMetrics;
         std::string mConfigFile;
 
@@ -102,24 +103,25 @@ const std::vector<std::pair<std::string, bool>>
 class ParserWithValidation
 {
   public:
-    ParserWithValidation(clara::Parser parser,
-                         std::function<std::string()> isValid = [] {
-                             return std::string{};
-                         })
+    ParserWithValidation(
+        clara::Parser parser,
+        std::function<std::string()> isValid = [] { return std::string{}; })
     {
         mParser = parser;
         mIsValid = isValid;
     }
 
-    ParserWithValidation(clara::Arg arg, std::function<std::string()> isValid =
-                                             [] { return std::string{}; })
+    ParserWithValidation(
+        clara::Arg arg,
+        std::function<std::string()> isValid = [] { return std::string{}; })
     {
         mParser = clara::Parser{} | arg;
         mIsValid = isValid;
     }
 
-    ParserWithValidation(clara::Opt opt, std::function<std::string()> isValid =
-                                             [] { return std::string{}; })
+    ParserWithValidation(
+        clara::Opt opt,
+        std::function<std::string()> isValid = [] { return std::string{}; })
     {
         mParser = clara::Parser{} | opt;
         mIsValid = isValid;
@@ -174,7 +176,7 @@ fileNameParser(std::string& string)
 clara::Opt
 processIDParser(int& num)
 {
-    return clara::Opt{num, "PROCESS-ID"}["--process_id"](
+    return clara::Opt{num, "PROCESS-ID"}["--process-id"](
         "for spawning multiple instances in fuzzing parallelization");
 }
 
@@ -185,7 +187,7 @@ outputFileParser(std::string& string)
 }
 
 clara::Opt
-logLevelParser(el::Level& value)
+logLevelParser(LogLevel& value)
 {
     return clara::Opt{
         [&](std::string const& arg) { value = Logging::getLLfromString(arg); },
@@ -197,6 +199,12 @@ metricsParser(std::vector<std::string>& value)
 {
     return clara::Opt{value, "METRIC-NAME"}["--metric"](
         "report metric METRIC-NAME on exit");
+}
+
+clara::Opt
+compactParser(bool& compact)
+{
+    return clara::Opt{compact}["--compact"]("no indent");
 }
 
 clara::Opt
@@ -247,8 +255,9 @@ configurationParser(CommandLine::ConfigOption& configOption)
     return logLevelParser(configOption.mLogLevel) |
            metricsParser(configOption.mMetrics) |
            clara::Opt{configOption.mConfigFile, "FILE-NAME"}["--conf"](
-               "specify a config file ('-' for STDIN, "
-               "default 'stellar-core.cfg')");
+               fmt::format("specify a config file ('{0}' for STDIN, default "
+                           "'stellar-core.cfg')",
+                           Config::STDIN_SPECIAL_NAME));
 }
 
 clara::Opt
@@ -272,6 +281,75 @@ maybeSetMetadataOutputStream(Config& cfg, std::string const& stream)
         cfg.METADATA_OUTPUT_STREAM = stream;
     }
 }
+
+optional<CatchupConfiguration>
+maybeEnableInMemoryLedgerMode(Config& config, bool inMemory,
+                              uint32_t startAtLedger,
+                              std::string const& startAtHash)
+{
+    if (!inMemory)
+    {
+        if (startAtLedger != 0)
+        {
+            throw std::runtime_error("--start-at-ledger requires --in-memory");
+        }
+        if (!startAtHash.empty())
+        {
+            throw std::runtime_error("--start-at-hash requires --in-memory");
+        }
+        return nullptr;
+    }
+
+    // Adjust configs for in-memory-replay mode
+    config.DATABASE = SecretValue{"sqlite3://:memory:"};
+    config.MODE_STORES_HISTORY = false;
+    config.MODE_USES_IN_MEMORY_LEDGER = true;
+    config.MODE_ENABLES_BUCKETLIST = true;
+    // And don't bother fsyncing buckets without a DB,
+    // they're temporary anyways.
+    config.DISABLE_XDR_FSYNC = true;
+
+    if (startAtLedger != 0 && startAtHash.empty())
+    {
+        throw std::runtime_error("--start-at-ledger requires --start-at-hash");
+    }
+    else if (startAtLedger == 0 && !startAtHash.empty())
+    {
+        throw std::runtime_error("--start-at-hash requires --start-at-ledger");
+    }
+    else if (startAtLedger != 0 && !startAtHash.empty())
+    {
+        config.MODE_AUTO_STARTS_OVERLAY = false;
+        LedgerNumHashPair pair;
+        pair.first = startAtLedger;
+        pair.second = make_optional<Hash>(hexToBin256(startAtHash));
+        uint32_t count = 0;
+        auto mode = CatchupConfiguration::Mode::OFFLINE_COMPLETE;
+        return make_optional<CatchupConfiguration>(pair, count, mode);
+    }
+    return nullptr;
+}
+
+clara::Opt
+inMemoryParser(bool& inMemory)
+{
+    return clara::Opt{inMemory}["--in-memory"](
+        "store working ledger in memory rather than database");
+};
+
+clara::Opt
+startAtLedgerParser(uint32_t& startAtLedger)
+{
+    return clara::Opt{startAtLedger, "LEDGER"}["--start-at-ledger"](
+        "start in-memory run with replay from historical ledger number");
+};
+
+clara::Opt
+startAtHashParser(std::string& startAtHash)
+{
+    return clara::Opt{startAtHash, "HASH"}["--start-at-hash"](
+        "start in-memory run with replay from historical ledger hash");
+};
 
 int
 runWithHelp(CommandLineArgs const& args,
@@ -377,7 +455,7 @@ CommandLine::ConfigOption::getConfig(bool logToFile) const
     auto configFile =
         mConfigFile.empty() ? std::string{"stellar-core.cfg"} : mConfigFile;
 
-    LOG(INFO) << "Config from " << configFile;
+    LOG_INFO(DEFAULT_LOG, "Config from {}", configFile);
 
     // yes you really have to do this 3 times
     Logging::setLogLevel(mLogLevel, nullptr);
@@ -390,6 +468,8 @@ CommandLine::ConfigOption::getConfig(bool logToFile) const
     {
         if (config.LOG_FILE_PATH.size())
             Logging::setLoggingToFile(config.LOG_FILE_PATH);
+        if (config.LOG_COLOR)
+            Logging::setLoggingColor(true);
         Logging::setLogLevel(mLogLevel, nullptr);
     }
 
@@ -516,6 +596,9 @@ runCatchup(CommandLineArgs const& args)
     std::string trustedCheckpointHashesFile;
     bool completeValidation = false;
     bool replayInMemory = false;
+    bool inMemory = false;
+    uint32_t startAtLedger = 0;
+    std::string startAtHash;
     std::string stream;
 
     auto validateCatchupString = [&] {
@@ -563,7 +646,7 @@ runCatchup(CommandLineArgs const& args)
 
     auto replayInMemoryParser = [](bool& replayInMemory) {
         return clara::Opt{replayInMemory}["--replay-in-memory"](
-            "don't use a database, just replay ledgers in memory");
+            "deprecated: use --in-memory flag, common to 'catchup' and 'run'");
     };
 
     return runWithHelp(
@@ -573,7 +656,8 @@ runCatchup(CommandLineArgs const& args)
          trustedCheckpointHashesParser(trustedCheckpointHashesFile),
          outputFileParser(outputFile), disableBucketGCParser(disableBucketGC),
          validationParser(completeValidation),
-         replayInMemoryParser(replayInMemory),
+         replayInMemoryParser(replayInMemory), inMemoryParser(inMemory),
+         startAtLedgerParser(startAtLedger), startAtHashParser(startAtHash),
          metadataOutputStreamParser(stream)},
         [&] {
             auto config = configOption.getConfig();
@@ -594,18 +678,8 @@ runCatchup(CommandLineArgs const& args)
                 config.AUTOMATIC_MAINTENANCE_COUNT = 1000000;
             }
 
-            if (replayInMemory)
-            {
-                // Adjust configs for in-memory-replay mode
-                config.DATABASE = SecretValue{"sqlite3://:memory:"};
-                config.MODE_STORES_HISTORY = false;
-                config.MODE_USES_IN_MEMORY_LEDGER = true;
-                config.MODE_ENABLES_BUCKETLIST = true;
-                // And don't bother fsyncing buckets without a DB,
-                // they're temporary anyways.
-                config.DISABLE_XDR_FSYNC = true;
-            }
-
+            maybeEnableInMemoryLedgerMode(config, (inMemory || replayInMemory),
+                                          startAtLedger, startAtHash);
             maybeSetMetadataOutputStream(config, stream);
 
             VirtualClock clock(VirtualClock::REAL_TIME);
@@ -641,8 +715,8 @@ runCatchup(CommandLineArgs const& args)
                     LedgerNumHashPair pair;
                     pair.first = cc.toLedger();
                     pair.second = make_optional<Hash>(h);
-                    LOG(INFO) << "Found trusted hash " << hexAbbrev(h)
-                              << " for ledger " << cc.toLedger();
+                    LOG_INFO(DEFAULT_LOG, "Found trusted hash {} for ledger {}",
+                             hexAbbrev(h), cc.toLedger());
                     cc = CatchupConfiguration(pair, cc.count(), cc.mode());
                 }
 
@@ -721,16 +795,19 @@ runWriteVerifiedCheckpointHashes(CommandLineArgs const& args)
             auto tryCheckpoint = [&](uint32_t seq, Hash h) {
                 if (hm.isLastLedgerInCheckpoint(seq))
                 {
-                    LOG(INFO) << "Found authenticated checkpoint hash "
-                              << hexAbbrev(h) << " for ledger " << seq;
+                    LOG_INFO(
+                        DEFAULT_LOG,
+                        "Found authenticated checkpoint hash {} for ledger {}",
+                        hexAbbrev(h), seq);
                     authPair.first = seq;
                     authPair.second = make_optional<Hash>(h);
                 }
                 else if (authPair.first != seq)
                 {
                     authPair.first = seq;
-                    LOG(INFO) << "Ledger " << seq
-                              << " is not a checkpoint boundary, waiting.";
+                    LOG_INFO(DEFAULT_LOG,
+                             "Ledger {} is not a checkpoint boundary, waiting.",
+                             seq);
                 }
             };
 
@@ -789,13 +866,13 @@ int
 runDumpXDR(CommandLineArgs const& args)
 {
     std::string xdr;
-    bool json = false;
-    auto jsonOption = clara::Opt{json}["--json"]("dump json");
+    bool compact = false;
 
-    return runWithHelp(args, {jsonOption, fileNameParser(xdr)}, [&] {
-        dumpXdrStream(xdr, json);
-        return 0;
-    });
+    return runWithHelp(args, {compactParser(compact), fileNameParser(xdr)},
+                       [&] {
+                           dumpXdrStream(xdr, compact);
+                           return 0;
+                       });
 }
 
 int
@@ -839,6 +916,15 @@ runHttpCommand(CommandLineArgs const& args)
                                        configOption.getConfig(false).HTTP_PORT);
                            return 0;
                        });
+}
+
+int
+runSelfCheck(CommandLineArgs const& args)
+{
+    CommandLine::ConfigOption configOption;
+
+    return runWithHelp(args, {configurationParser(configOption)},
+                       [&] { return selfCheck(configOption.getConfig()); });
 }
 
 int
@@ -912,15 +998,18 @@ runPrintXdr(CommandLineArgs const& args)
     std::string xdr;
     std::string fileType{"auto"};
     auto base64 = false;
+    auto compact = false;
 
     auto fileTypeOpt = clara::Opt(fileType, "FILE-TYPE")["--filetype"](
         "[auto|ledgerheader|meta|result|resultpair|tx|txfee]");
 
-    return runWithHelp(
-        args, {fileNameParser(xdr), fileTypeOpt, base64Parser(base64)}, [&] {
-            printXdr(xdr, fileType, base64);
-            return 0;
-        });
+    return runWithHelp(args,
+                       {fileNameParser(xdr), fileTypeOpt, base64Parser(base64),
+                        compactParser(compact)},
+                       [&] {
+                           printXdr(xdr, fileType, base64, compact);
+                           return 0;
+                       });
 }
 
 int
@@ -944,7 +1033,10 @@ run(CommandLineArgs const& args)
     auto disableBucketGC = false;
     uint32_t simulateSleepPerOp = 0;
     std::string stream;
+    bool inMemory = false;
     bool waitForConsensus = false;
+    uint32_t startAtLedger = 0;
+    std::string startAtHash;
 
     auto simulateParser = [](uint32_t& simulateSleepPerOp) {
         return clara::Opt{simulateSleepPerOp,
@@ -957,9 +1049,11 @@ run(CommandLineArgs const& args)
         {configurationParser(configOption),
          disableBucketGCParser(disableBucketGC),
          simulateParser(simulateSleepPerOp), metadataOutputStreamParser(stream),
-         waitForConsensusParser(waitForConsensus)},
+         inMemoryParser(inMemory), waitForConsensusParser(waitForConsensus),
+         startAtLedgerParser(startAtLedger), startAtHashParser(startAtHash)},
         [&] {
             Config cfg;
+            optional<CatchupConfiguration> cc;
             try
             {
                 cfg = configOption.getConfig();
@@ -974,19 +1068,22 @@ run(CommandLineArgs const& args)
                     cfg.PREFETCH_BATCH_SIZE = 0;
                 }
 
+                cc = maybeEnableInMemoryLedgerMode(cfg, inMemory, startAtLedger,
+                                                   startAtHash);
                 maybeSetMetadataOutputStream(cfg, stream);
                 cfg.FORCE_SCP =
                     cfg.NODE_IS_VALIDATOR ? !waitForConsensus : false;
             }
             catch (std::exception& e)
             {
-                LOG(FATAL) << "Got an exception: " << e.what();
-                LOG(FATAL) << REPORT_INTERNAL_BUG;
+                LOG_FATAL(DEFAULT_LOG, "Got an exception: {}", e.what());
+                LOG_FATAL(DEFAULT_LOG, "{}", REPORT_INTERNAL_BUG);
                 return 1;
             }
+
             // run outside of catch block so that we properly
             // capture crashes
-            return runWithConfig(cfg);
+            return runWithConfig(cfg, cc);
         });
 }
 
@@ -1143,7 +1240,7 @@ runGenerateOrSimulateTxs(CommandLineArgs const& args, bool generate)
                 config.HISTORY[simArchive.first] = simArchive.second;
             }
 
-            LOG(INFO) << "Publishing is disabled in `simulate` mode";
+            LOG_INFO(DEFAULT_LOG, "Publishing is disabled in `simulate` mode");
             config.setNoPublish();
         }
         else if (found == config.HISTORY.end())
@@ -1231,7 +1328,7 @@ runSimulateBuckets(CommandLineArgs const& args)
             std::shared_ptr<HistoryArchiveState> has;
             if (!hasStr.empty())
             {
-                LOG(INFO) << "Loading state from " << hasStr;
+                LOG_INFO(DEFAULT_LOG, "Loading state from {}", hasStr);
                 has = std::make_shared<HistoryArchiveState>();
                 has->load(hasStr);
                 config.DISABLE_BUCKET_GC =
@@ -1277,8 +1374,8 @@ runSimulateBuckets(CommandLineArgs const& args)
                 while (hdrIn && hdrIn.readOne(curr))
                     ;
 
-                LOG(INFO) << "Assuming state for ledger "
-                          << curr.header.ledgerSeq;
+                LOG_INFO(DEFAULT_LOG, "Assuming state for ledger {}",
+                         curr.header.ledgerSeq);
                 app->getLedgerManager().setLastClosedLedger(curr);
                 app->getBucketManager().forgetUnreferencedBuckets();
             }
@@ -1315,7 +1412,7 @@ fuzzerModeParser(std::string& fuzzerModeArg, FuzzerMode& fuzzerMode)
 int
 runFuzz(CommandLineArgs const& args)
 {
-    el::Level logLevel{el::Level::Info};
+    LogLevel logLevel{LogLevel::LVL_INFO};
     std::vector<std::string> metrics;
     std::string fileName;
     int processID = 0;
@@ -1327,8 +1424,9 @@ runFuzz(CommandLineArgs const& args)
                         fileNameParser(fileName), processIDParser(processID),
                         fuzzerModeParser(fuzzerModeArg, fuzzerMode)},
                        [&] {
-                           fuzz(fileName, logLevel, metrics, processID,
-                                fuzzerMode);
+                           Logging::setLogLevel(logLevel, nullptr);
+
+                           fuzz(fileName, metrics, processID, fuzzerMode);
                            return 0;
                        });
 }
@@ -1370,6 +1468,7 @@ handleCommandLine(int argc, char* const* argv)
          {"gen-seed", "generate and print a random node seed", runGenSeed},
          {"http-command", "send a command to local stellar-core",
           runHttpCommand},
+         {"self-check", "performs sanity checks", runSelfCheck},
          {"infer-quorum", "print a quorum set inferred from history",
           runInferQuorum},
          {"new-db", "creates or restores the DB to the genesis ledger",
@@ -1438,8 +1537,8 @@ handleCommandLine(int argc, char* const* argv)
     }
     catch (std::exception& e)
     {
-        LOG(FATAL) << "Got an exception: " << e.what();
-        LOG(FATAL) << REPORT_INTERNAL_BUG;
+        LOG_FATAL(DEFAULT_LOG, "Got an exception: {}", e.what());
+        LOG_FATAL(DEFAULT_LOG, "{}", REPORT_INTERNAL_BUG);
         return 1;
     }
 }

@@ -9,6 +9,7 @@
 #include "main/Application.h"
 #include "transactions/OfferExchange.h"
 #include "transactions/TransactionUtils.h"
+#include "util/XDRCereal.h"
 #include "util/types.h"
 #include "xdrpp/printer.h"
 #include <fmt/format.h>
@@ -99,7 +100,7 @@ checkAuthorized(LedgerEntry const* current, LedgerEntry const* previous)
                 {
                     return fmt::format(
                         "Liabilities increased on unauthorized trust line {}",
-                        xdr::xdr_to_string(trust));
+                        xdr_to_string(trust));
                 }
             }
             else
@@ -109,7 +110,7 @@ checkAuthorized(LedgerEntry const* current, LedgerEntry const* previous)
                 {
                     return fmt::format(
                         "Unauthorized trust line has liabilities {}",
-                        xdr::xdr_to_string(trust));
+                        xdr_to_string(trust));
                 }
             }
         }
@@ -118,12 +119,11 @@ checkAuthorized(LedgerEntry const* current, LedgerEntry const* previous)
 }
 
 static std::string
-checkAuthorized(
-    std::shared_ptr<GeneralizedLedgerEntry const> const& genCurrent,
-    std::shared_ptr<GeneralizedLedgerEntry const> const& genPrevious)
+checkAuthorized(std::shared_ptr<InternalLedgerEntry const> const& genCurrent,
+                std::shared_ptr<InternalLedgerEntry const> const& genPrevious)
 {
     auto type = genCurrent ? genCurrent->type() : genPrevious->type();
-    if (type == GeneralizedLedgerEntryType::LEDGER_ENTRY)
+    if (type == InternalLedgerEntryType::LEDGER_ENTRY)
     {
         auto const* current = genCurrent ? &genCurrent->ledgerEntry() : nullptr;
         auto const* previous =
@@ -183,10 +183,9 @@ addOrSubtractLiabilities(
 static void
 addOrSubtractLiabilities(
     std::map<AccountID, std::map<Asset, Liabilities>>& deltaLiabilities,
-    std::shared_ptr<GeneralizedLedgerEntry const> const& genEntry, bool isAdd)
+    std::shared_ptr<InternalLedgerEntry const> const& genEntry, bool isAdd)
 {
-    if (genEntry &&
-        genEntry->type() == GeneralizedLedgerEntryType::LEDGER_ENTRY)
+    if (genEntry && genEntry->type() == InternalLedgerEntryType::LEDGER_ENTRY)
     {
         addOrSubtractLiabilities(deltaLiabilities, &genEntry->ledgerEntry(),
                                  isAdd);
@@ -196,8 +195,8 @@ addOrSubtractLiabilities(
 static void
 accumulateLiabilities(
     std::map<AccountID, std::map<Asset, Liabilities>>& deltaLiabilities,
-    std::shared_ptr<GeneralizedLedgerEntry const> const& current,
-    std::shared_ptr<GeneralizedLedgerEntry const> const& previous)
+    std::shared_ptr<InternalLedgerEntry const> const& current,
+    std::shared_ptr<InternalLedgerEntry const> const& previous)
 {
     addOrSubtractLiabilities(deltaLiabilities, current, true);
     addOrSubtractLiabilities(deltaLiabilities, previous, false);
@@ -258,7 +257,7 @@ checkBalanceAndLimit(LedgerHeader const& header, LedgerEntry const* current,
             {
                 return fmt::format(
                     "Balance not compatible with liabilities for account {}",
-                    xdr::xdr_to_string(account));
+                    xdr_to_string(account));
             }
         }
     }
@@ -276,7 +275,7 @@ checkBalanceAndLimit(LedgerHeader const& header, LedgerEntry const* current,
         {
             return fmt::format(
                 "Balance not compatible with liabilities for trustline {}",
-                xdr::xdr_to_string(trust));
+                xdr_to_string(trust));
         }
     }
     return {};
@@ -285,12 +284,12 @@ checkBalanceAndLimit(LedgerHeader const& header, LedgerEntry const* current,
 static std::string
 checkBalanceAndLimit(
     LedgerHeader const& header,
-    std::shared_ptr<GeneralizedLedgerEntry const> const& genCurrent,
-    std::shared_ptr<GeneralizedLedgerEntry const> const& genPrevious,
+    std::shared_ptr<InternalLedgerEntry const> const& genCurrent,
+    std::shared_ptr<InternalLedgerEntry const> const& genPrevious,
     uint32_t ledgerVersion)
 {
     auto type = genCurrent ? genCurrent->type() : genPrevious->type();
-    if (type == GeneralizedLedgerEntryType::LEDGER_ENTRY)
+    if (type == InternalLedgerEntryType::LEDGER_ENTRY)
     {
         auto const* current = genCurrent ? &genCurrent->ledgerEntry() : nullptr;
         auto const* previous =
@@ -349,8 +348,8 @@ LiabilitiesMatchOffers::checkOnOperationApply(Operation const& operation,
                         "change in total buying liabilities of "
                         "offers by {} for account {} in asset {}",
                         assetLiabilities.second.buying,
-                        xdr::xdr_to_string(accLiabilities.first),
-                        xdr::xdr_to_string(assetLiabilities.first));
+                        xdr_to_string(accLiabilities.first),
+                        xdr_to_string(assetLiabilities.first));
                 }
                 else if (assetLiabilities.second.selling != 0)
                 {
@@ -359,8 +358,8 @@ LiabilitiesMatchOffers::checkOnOperationApply(Operation const& operation,
                         "change in total selling liabilities of "
                         "offers by {} for account {} in asset {}",
                         assetLiabilities.second.selling,
-                        xdr::xdr_to_string(accLiabilities.first),
-                        xdr::xdr_to_string(assetLiabilities.first));
+                        xdr_to_string(accLiabilities.first),
+                        xdr_to_string(assetLiabilities.first));
                 }
             }
         }

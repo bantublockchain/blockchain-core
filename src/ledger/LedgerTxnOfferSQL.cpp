@@ -435,8 +435,7 @@ class BulkUpsertOffersOperation : public DatabaseTypeSpecificOperation<void>
         for (auto const& e : entries)
         {
             assert(e.entryExists());
-            assert(e.entry().type() ==
-                   GeneralizedLedgerEntryType::LEDGER_ENTRY);
+            assert(e.entry().type() == InternalLedgerEntryType::LEDGER_ENTRY);
             accumulateEntry(e.entry().ledgerEntry());
         }
     }
@@ -592,7 +591,7 @@ class BulkDeleteOffersOperation : public DatabaseTypeSpecificOperation<void>
         for (auto const& e : entries)
         {
             assert(!e.entryExists());
-            assert(e.key().type() == GeneralizedLedgerEntryType::LEDGER_ENTRY);
+            assert(e.key().type() == InternalLedgerEntryType::LEDGER_ENTRY);
             assert(e.key().ledgerKey().type() == OFFER);
             auto const& offer = e.key().ledgerKey().offer();
             mOfferIDs.emplace_back(offer.offerID);
@@ -677,7 +676,7 @@ LedgerTxnRoot::Impl::dropOffers()
 {
     throwIfChild();
     mEntryCache.clear();
-    mBestOffersCache.clear();
+    mBestOffers.clear();
 
     std::string coll = mDatabase.getSimpleCollationClause();
 
@@ -716,7 +715,7 @@ class BulkLoadOffersOperation
 {
     Database& mDb;
     std::vector<int64_t> mOfferIDs;
-    std::unordered_set<LedgerKey> mKeys;
+    UnorderedSet<LedgerKey> mKeys;
 
     std::vector<LedgerEntry>
     executeAndFetch(soci::statement& st)
@@ -779,8 +778,7 @@ class BulkLoadOffersOperation
     }
 
   public:
-    BulkLoadOffersOperation(Database& db,
-                            std::unordered_set<LedgerKey> const& keys)
+    BulkLoadOffersOperation(Database& db, UnorderedSet<LedgerKey> const& keys)
         : mDb(db)
     {
         mOfferIDs.reserve(keys.size());
@@ -840,9 +838,8 @@ class BulkLoadOffersOperation
 #endif
 };
 
-std::unordered_map<LedgerKey, std::shared_ptr<LedgerEntry const>>
-LedgerTxnRoot::Impl::bulkLoadOffers(
-    std::unordered_set<LedgerKey> const& keys) const
+UnorderedMap<LedgerKey, std::shared_ptr<LedgerEntry const>>
+LedgerTxnRoot::Impl::bulkLoadOffers(UnorderedSet<LedgerKey> const& keys) const
 {
     ZoneScoped;
     ZoneValue(static_cast<int64_t>(keys.size()));

@@ -13,6 +13,7 @@
 #include "util/Math.h"
 #include "xdrpp/marshal.h"
 #include <fmt/format.h>
+#include <lib/json/json.h>
 #include <xdrpp/autocheck.h>
 
 using namespace stellar;
@@ -31,15 +32,74 @@ TEST_CASE("quorum intersection basic 4-node", "[herder][quorumintersection]")
     PublicKey pkC = SecretKey::pseudoRandomForTesting().getPublicKey();
     PublicKey pkD = SecretKey::pseudoRandomForTesting().getPublicKey();
 
-    qm[pkA] = make_shared<QS>(2, VK({pkB, pkC, pkD}), VQ{});
-    qm[pkB] = make_shared<QS>(2, VK({pkA, pkC, pkD}), VQ{});
-    qm[pkC] = make_shared<QS>(2, VK({pkA, pkB, pkD}), VQ{});
-    qm[pkD] = make_shared<QS>(2, VK({pkA, pkB, pkC}), VQ{});
+    qm[pkA] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkB, pkC, pkD}), VQ{}), 0};
+    qm[pkB] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkA, pkC, pkD}), VQ{}), 0};
+    qm[pkC] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkA, pkB, pkD}), VQ{}), 0};
+    qm[pkD] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkA, pkB, pkC}), VQ{}), 0};
 
     Config cfg(getTestConfig());
     std::atomic<bool> flag{false};
     auto qic = QuorumIntersectionChecker::create(qm, cfg, flag);
     REQUIRE(qic->networkEnjoysQuorumIntersection());
+}
+
+TEST_CASE("quorum non intersection basic 4-node",
+          "[herder][quorumintersection]")
+{
+    QuorumTracker::QuorumMap qm;
+
+    PublicKey pkA = SecretKey::pseudoRandomForTesting().getPublicKey();
+    PublicKey pkB = SecretKey::pseudoRandomForTesting().getPublicKey();
+    PublicKey pkC = SecretKey::pseudoRandomForTesting().getPublicKey();
+    PublicKey pkD = SecretKey::pseudoRandomForTesting().getPublicKey();
+
+    qm[pkA] = QuorumTracker::NodeInfo{
+        make_shared<QS>(1, VK({pkB, pkC, pkD}), VQ{}), 0};
+    qm[pkB] = QuorumTracker::NodeInfo{
+        make_shared<QS>(1, VK({pkA, pkC, pkD}), VQ{}), 0};
+    qm[pkC] = QuorumTracker::NodeInfo{
+        make_shared<QS>(1, VK({pkA, pkB, pkD}), VQ{}), 0};
+    qm[pkD] = QuorumTracker::NodeInfo{
+        make_shared<QS>(1, VK({pkA, pkB, pkC}), VQ{}), 0};
+
+    Config cfg(getTestConfig());
+    std::atomic<bool> flag{false};
+    auto qic = QuorumIntersectionChecker::create(qm, cfg, flag);
+    REQUIRE(!qic->networkEnjoysQuorumIntersection());
+}
+
+TEST_CASE("quorum non intersection 6-node", "[herder][quorumintersection]")
+{
+    QuorumTracker::QuorumMap qm;
+
+    PublicKey pkA = SecretKey::pseudoRandomForTesting().getPublicKey();
+    PublicKey pkB = SecretKey::pseudoRandomForTesting().getPublicKey();
+    PublicKey pkC = SecretKey::pseudoRandomForTesting().getPublicKey();
+    PublicKey pkD = SecretKey::pseudoRandomForTesting().getPublicKey();
+    PublicKey pkE = SecretKey::pseudoRandomForTesting().getPublicKey();
+    PublicKey pkF = SecretKey::pseudoRandomForTesting().getPublicKey();
+
+    qm[pkA] =
+        QuorumTracker::NodeInfo{make_shared<QS>(2, VK{pkB, pkC}, VQ{}), 0};
+    qm[pkB] =
+        QuorumTracker::NodeInfo{make_shared<QS>(2, VK{pkA, pkC}, VQ{}), 0};
+    qm[pkC] =
+        QuorumTracker::NodeInfo{make_shared<QS>(2, VK{pkA, pkB}, VQ{}), 0};
+    qm[pkD] =
+        QuorumTracker::NodeInfo{make_shared<QS>(2, VK{pkE, pkF}, VQ{}), 0};
+    qm[pkE] =
+        QuorumTracker::NodeInfo{make_shared<QS>(2, VK{pkD, pkF}, VQ{}), 0};
+    qm[pkF] =
+        QuorumTracker::NodeInfo{make_shared<QS>(2, VK{pkD, pkE}, VQ{}), 0};
+
+    Config cfg(getTestConfig());
+    std::atomic<bool> flag{false};
+    auto qic = QuorumIntersectionChecker::create(qm, cfg, flag);
+    REQUIRE(!qic->networkEnjoysQuorumIntersection());
 }
 
 TEST_CASE("quorum intersection 6-node with subquorums",
@@ -70,12 +130,18 @@ TEST_CASE("quorum intersection 6-node with subquorums",
     SCPQuorumSet qsBDE(2, VK({pkB, pkD, pkE}), VQ{});
     SCPQuorumSet qsCDE(2, VK({pkC, pkD, pkE}), VQ{});
 
-    qm[pkA] = make_shared<QS>(2, VK{}, VQ({qsBDC, qsBDE, qsCDE}));
-    qm[pkB] = make_shared<QS>(2, VK{}, VQ({qsACD, qsACE, qsACF}));
-    qm[pkC] = make_shared<QS>(2, VK{}, VQ({qsABD, qsABE, qsABF}));
-    qm[pkD] = make_shared<QS>(2, VK{}, VQ({qsABC, qsABE, qsABF}));
-    qm[pkE] = make_shared<QS>(2, VK{}, VQ({qsABC, qsABD, qsABF}));
-    qm[pkF] = make_shared<QS>(2, VK{}, VQ({qsABC, qsABD, qsABE}));
+    qm[pkA] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsBDC, qsBDE, qsCDE})), 0};
+    qm[pkB] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsACD, qsACE, qsACF})), 0};
+    qm[pkC] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsABD, qsABE, qsABF})), 0};
+    qm[pkD] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsABC, qsABE, qsABF})), 0};
+    qm[pkE] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsABC, qsABD, qsABF})), 0};
+    qm[pkF] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsABC, qsABD, qsABE})), 0};
 
     Config cfg(getTestConfig());
     std::atomic<bool> flag{false};
@@ -95,12 +161,18 @@ TEST_CASE("quorum non intersection basic 6-node",
     PublicKey pkE = SecretKey::pseudoRandomForTesting().getPublicKey();
     PublicKey pkF = SecretKey::pseudoRandomForTesting().getPublicKey();
 
-    qm[pkA] = make_shared<QS>(2, VK({pkB, pkC, pkD, pkE, pkF}), VQ{});
-    qm[pkB] = make_shared<QS>(2, VK({pkA, pkC, pkD, pkE, pkF}), VQ{});
-    qm[pkC] = make_shared<QS>(2, VK({pkA, pkB, pkD, pkE, pkF}), VQ{});
-    qm[pkD] = make_shared<QS>(2, VK({pkA, pkB, pkC, pkE, pkF}), VQ{});
-    qm[pkE] = make_shared<QS>(2, VK({pkA, pkB, pkC, pkD, pkF}), VQ{});
-    qm[pkF] = make_shared<QS>(2, VK({pkA, pkB, pkC, pkD, pkE}), VQ{});
+    qm[pkA] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkB, pkC, pkD, pkE, pkF}), VQ{}), 0};
+    qm[pkB] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkA, pkC, pkD, pkE, pkF}), VQ{}), 0};
+    qm[pkC] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkA, pkB, pkD, pkE, pkF}), VQ{}), 0};
+    qm[pkD] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkA, pkB, pkC, pkE, pkF}), VQ{}), 0};
+    qm[pkE] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkA, pkB, pkC, pkD, pkF}), VQ{}), 0};
+    qm[pkF] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK({pkA, pkB, pkC, pkD, pkE}), VQ{}), 0};
 
     Config cfg(getTestConfig());
     std::atomic<bool> flag{false};
@@ -138,13 +210,19 @@ TEST_CASE("quorum non intersection 6-node with subquorums",
     SCPQuorumSet qsCDE(2, VK({pkC, pkD, pkE}), VQ{});
     SCPQuorumSet qsCDF(2, VK({pkC, pkD, pkF}), VQ{});
 
-    qm[pkA] = make_shared<QS>(2, VK{}, VQ({qsABC, qsABD, qsABE}));
-    qm[pkB] = make_shared<QS>(2, VK{}, VQ({qsBDC, qsABD, qsABF}));
-    qm[pkC] = make_shared<QS>(2, VK{}, VQ({qsACD, qsACD, qsACF}));
+    qm[pkA] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsABC, qsABD, qsABE})), 0};
+    qm[pkB] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsBDC, qsABD, qsABF})), 0};
+    qm[pkC] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsACD, qsACD, qsACF})), 0};
 
-    qm[pkD] = make_shared<QS>(2, VK{}, VQ({qsCDE, qsADE, qsBDE}));
-    qm[pkE] = make_shared<QS>(2, VK{}, VQ({qsCDE, qsADE, qsBDE}));
-    qm[pkF] = make_shared<QS>(2, VK{}, VQ({qsABF, qsADF, qsBDF}));
+    qm[pkD] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsCDE, qsADE, qsBDE})), 0};
+    qm[pkE] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsCDE, qsADE, qsBDE})), 0};
+    qm[pkF] = QuorumTracker::NodeInfo{
+        make_shared<QS>(2, VK{}, VQ({qsABF, qsADF, qsBDF})), 0};
 
     Config cfg(getTestConfig());
     std::atomic<bool> flag{false};
@@ -197,31 +275,31 @@ TEST_CASE("quorum plausible non intersection", "[herder][quorumintersection]")
     // All 3 SDF nodes get this:
     auto qsSDF = make_shared<QS>(3, VK({pkSDF1, pkSDF2, pkSDF3}),
                                  VQ({qs1of2LOBSTR, qs2of3SatoshiPay}));
-    qm[pkSDF1] = qsSDF;
-    qm[pkSDF2] = qsSDF;
-    qm[pkSDF3] = qsSDF;
+    qm[pkSDF1] = QuorumTracker::NodeInfo{qsSDF, 0};
+    qm[pkSDF2] = QuorumTracker::NodeInfo{qsSDF, 0};
+    qm[pkSDF3] = QuorumTracker::NodeInfo{qsSDF, 0};
 
     // All SatoshiPay nodes get this:
     auto qsSatoshiPay =
         make_shared<QS>(4, VK({pkSatoshi1, pkSatoshi2, pkSatoshi3}),
                         VQ({qs2of3SDF, qs1of2LOBSTR, qs1of2COINQVEST}));
-    qm[pkSatoshi1] = qsSatoshiPay;
-    qm[pkSatoshi2] = qsSatoshiPay;
-    qm[pkSatoshi3] = qsSatoshiPay;
+    qm[pkSatoshi1] = QuorumTracker::NodeInfo{qsSatoshiPay, 0};
+    qm[pkSatoshi2] = QuorumTracker::NodeInfo{qsSatoshiPay, 0};
+    qm[pkSatoshi3] = QuorumTracker::NodeInfo{qsSatoshiPay, 0};
 
     // All LOBSTR nodes get this:
     auto qsLOBSTR = make_shared<QS>(
         5, VK({pkSDF1, pkSDF2, pkSDF3, pkSatoshi1, pkSatoshi2, pkSatoshi3}),
         VQ{});
-    qm[pkLOBSTR1] = qsLOBSTR;
-    qm[pkLOBSTR2] = qsLOBSTR;
+    qm[pkLOBSTR1] = QuorumTracker::NodeInfo{qsLOBSTR, 0};
+    qm[pkLOBSTR2] = QuorumTracker::NodeInfo{qsLOBSTR, 0};
 
     // All COINQVEST nodes get this:
     auto qsCOINQVEST =
         make_shared<QS>(3, VK({pkCOINQVEST1, pkCOINQVEST2}),
                         VQ({qs2of3SDF, qs2of3SatoshiPay, qs1of2LOBSTR}));
-    qm[pkCOINQVEST1] = qsCOINQVEST;
-    qm[pkCOINQVEST2] = qsCOINQVEST;
+    qm[pkCOINQVEST1] = QuorumTracker::NodeInfo{qsCOINQVEST, 0};
+    qm[pkCOINQVEST2] = QuorumTracker::NodeInfo{qsCOINQVEST, 0};
 
     std::atomic<bool> flag{false};
     auto qic = QuorumIntersectionChecker::create(qm, cfg, flag);
@@ -285,8 +363,9 @@ interconnectOrgs(xdr::xvector<xdr::xvector<PublicKey>> const& orgs,
         qs->validators = org;
         for (auto const& pk : org)
         {
-            qm[pk] = qs;
+            qm[pk] = QuorumTracker::NodeInfo{qs, 0};
         }
+
         auto& depOrgs = qs->innerSets;
         for (size_t j = 0; j < orgs.size(); ++j)
         {
@@ -296,7 +375,7 @@ interconnectOrgs(xdr::xvector<xdr::xvector<PublicKey>> const& orgs,
             }
             if (shouldDepend(i, j))
             {
-                CLOG(DEBUG, "Herder") << "dep: org#" << i << " => org#" << j;
+                CLOG_DEBUG(Herder, "dep: org#{} => org#{}", i, j);
                 auto& otherOrg = orgs.at(j);
                 auto thresh = roundUpPct(otherOrg.size(), innerThreshPct);
                 depOrgs.emplace_back(thresh, otherOrg, emptySet);
@@ -313,18 +392,19 @@ interconnectOrgsUnidir(xdr::xvector<xdr::xvector<PublicKey>> const& orgs,
                        std::vector<std::pair<size_t, size_t>> edges,
                        size_t ownThreshPct = 67, size_t innerThreshPct = 51)
 {
-    return interconnectOrgs(orgs,
-                            [&edges](size_t i, size_t j) {
-                                for (auto const& e : edges)
-                                {
-                                    if (e.first == i && e.second == j)
-                                    {
-                                        return true;
-                                    }
-                                }
-                                return false;
-                            },
-                            ownThreshPct, innerThreshPct);
+    return interconnectOrgs(
+        orgs,
+        [&edges](size_t i, size_t j) {
+            for (auto const& e : edges)
+            {
+                if (e.first == i && e.second == j)
+                {
+                    return true;
+                }
+            }
+            return false;
+        },
+        ownThreshPct, innerThreshPct);
 }
 
 static QuorumTracker::QuorumMap
@@ -332,19 +412,20 @@ interconnectOrgsBidir(xdr::xvector<xdr::xvector<PublicKey>> const& orgs,
                       std::vector<std::pair<size_t, size_t>> edges,
                       size_t ownThreshPct = 67, size_t innerThreshPct = 51)
 {
-    return interconnectOrgs(orgs,
-                            [&edges](size_t i, size_t j) {
-                                for (auto const& e : edges)
-                                {
-                                    if ((e.first == i && e.second == j) ||
-                                        (e.first == j && e.second == i))
-                                    {
-                                        return true;
-                                    }
-                                }
-                                return false;
-                            },
-                            ownThreshPct, innerThreshPct);
+    return interconnectOrgs(
+        orgs,
+        [&edges](size_t i, size_t j) {
+            for (auto const& e : edges)
+            {
+                if ((e.first == i && e.second == j) ||
+                    (e.first == j && e.second == i))
+                {
+                    return true;
+                }
+            }
+            return false;
+        },
+        ownThreshPct, innerThreshPct);
 }
 
 TEST_CASE("quorum intersection 4-org fully-connected - elide all minquorums",
@@ -688,7 +769,7 @@ TEST_CASE("quorum intersection 6-org 1-node 4-null qsets",
     {
         for (auto const& node : orgs.at(i))
         {
-            qm[node] = nullptr;
+            qm[node] = QuorumTracker::NodeInfo{nullptr, 0};
         }
     }
 
@@ -734,7 +815,7 @@ TEST_CASE("quorum intersection 4-org 1-node 4-null qsets",
     {
         for (auto const& node : orgs.at(i))
         {
-            qm[node] = nullptr;
+            qm[node] = QuorumTracker::NodeInfo{nullptr, 0};
         }
     }
 
@@ -804,19 +885,18 @@ debugQmap(Config const& cfg, QuorumTracker::QuorumMap const& qm)
 {
     for (auto const& pair : qm)
     {
-        if (pair.second)
+        if (pair.second.mQuorumSet)
         {
-            auto str =
-                LocalNode::toJson(*pair.second, [&cfg](PublicKey const& k) {
-                    return cfg.toShortString(k);
-                });
-            CLOG(DEBUG, "Herder")
-                << "qmap[" << cfg.toShortString(pair.first) << "] = " << str;
+            auto str = LocalNode::toJson(
+                *(pair.second.mQuorumSet),
+                [&cfg](PublicKey const& k) { return cfg.toShortString(k); });
+            CLOG_DEBUG(Herder, "qmap[{}] = {}", cfg.toShortString(pair.first),
+                       str);
         }
         else
         {
-            CLOG(DEBUG, "Herder")
-                << "qmap[" << cfg.toShortString(pair.first) << "] = nullptr";
+            CLOG_DEBUG(Herder, "qmap[{}] = nullptr",
+                       cfg.toShortString(pair.first));
         }
     }
 }

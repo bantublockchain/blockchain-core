@@ -6,6 +6,7 @@
 #include "crypto/Hex.h"
 #include "crypto/KeyUtils.h"
 #include "herder/Herder.h"
+#include "history/HistoryArchiveManager.h"
 #include "ledger/LedgerManager.h"
 #include "ledger/LedgerTxn.h"
 #include "ledger/LedgerTxnEntry.h"
@@ -26,9 +27,9 @@
 
 #include "medida/reporting/json_reporter.h"
 #include "util/Decoder.h"
+#include "util/XDRCereal.h"
 #include "util/XDROperators.h"
 #include "xdrpp/marshal.h"
-#include "xdrpp/printer.h"
 
 #include "ExternalQueue.h"
 
@@ -56,8 +57,8 @@ CommandHandler::CommandHandler(Application& app) : mApp(app)
         {
             ipStr = "127.0.0.1";
         }
-        LOG(INFO) << "Listening on " << ipStr << ":"
-                  << mApp.getConfig().HTTP_PORT << " for HTTP requests";
+        LOG_INFO(DEFAULT_LOG, "Listening on {}:{} for HTTP requests", ipStr,
+                 mApp.getConfig().HTTP_PORT);
 
         int httpMaxClient = mApp.getConfig().HTTP_MAX_CLIENT;
 
@@ -105,6 +106,7 @@ CommandHandler::CommandHandler(Application& app) : mApp(app)
     addRoute("metrics", &CommandHandler::metrics);
     addRoute("tx", &CommandHandler::tx);
     addRoute("upgrades", &CommandHandler::upgrades);
+    addRoute("self-check", &CommandHandler::selfCheck);
 
 #ifdef BUILD_TESTS
     addRoute("generateload", &CommandHandler::generateLoad);
@@ -148,7 +150,7 @@ CommandHandler::manualCmd(std::string const& cmd)
     http::server::request request;
     request.uri = cmd;
     mServer->handle_request(request, reply);
-    LOG(INFO) << cmd << " -> " << reply.content;
+    LOG_INFO(DEFAULT_LOG, "{} -> {}", cmd, reply.content);
     return reply.content;
 }
 
@@ -164,32 +166,17 @@ CommandHandler::fileNotFound(std::string const& params, std::string& retStr)
         "<p>Have fun!</p>";
 }
 
-void
-CommandHandler::manualClose(std::string const& params, std::string& retStr)
-{
-    if (mApp.manualClose())
-    {
-        retStr = "Triggering a new consensus round";
-    }
-    else
-    {
-        retStr = "Set MANUAL_CLOSE=true in the stellar-core.cfg if you want to "
-                 "close every ledger manually. Otherwise, run stellar-core "
-                 "with --wait-for-consensus flag to close ledger once and "
-                 "trigger consensus. Ensure NODE_IS_VALIDATOR is set to true.";
-    }
-}
-
 template <typename T>
 optional<T>
-maybeParseParam(std::map<std::string, std::string> const& map,
-                std::string const& key, T& defaultVal)
+parseOptionalParam(std::map<std::string, std::string> const& map,
+                   std::string const& key)
 {
     auto i = map.find(key);
     if (i != map.end())
     {
         std::stringstream str(i->second);
-        str >> defaultVal;
+        T val;
+        str >> val;
 
         // Throw an error if not all bytes were loaded into `val`
         if (str.fail() || !str.eof())
@@ -198,25 +185,65 @@ maybeParseParam(std::map<std::string, std::string> const& map,
                 fmt::format("Failed to parse '{}' argument", key);
             throw std::runtime_error(errorMsg);
         }
-        return make_optional<T>(defaultVal);
+        return make_optional<T>(val);
     }
 
     return nullopt<T>();
 }
 
+// If the key exists and the value successfully parses, return that value.
+// If the key doesn't exist, return defaultValue.
+// Otherwise, throws an error.
 template <typename T>
 T
-parseParam(std::map<std::string, std::string> const& map,
-           std::string const& key)
+parseOptionalParamOrDefault(std::map<std::string, std::string> const& map,
+                            std::string const& key, T const& defaultValue)
 {
-    T val;
-    auto res = maybeParseParam(map, key, val);
+    optional<T> res = parseOptionalParam<T>(map, key);
+    if (res)
+    {
+        return *res;
+    }
+    else
+    {
+        return defaultValue;
+    }
+}
+
+// Return a value only if the key exists and the value parses.
+// Otherwise, this throws an error.
+template <typename T>
+T
+parseRequiredParam(std::map<std::string, std::string> const& map,
+                   std::string const& key)
+{
+    auto res = parseOptionalParam<T>(map, key);
     if (!res)
     {
         std::string errorMsg = fmt::format("'{}' argument is required!", key);
         throw std::runtime_error(errorMsg);
     }
-    return val;
+    return *res;
+}
+
+void
+CommandHandler::manualClose(std::string const& params, std::string& retStr)
+{
+    ZoneScoped;
+    std::map<std::string, std::string> retMap;
+    http::server::server::parseParams(params, retMap);
+
+    if (!retMap.empty() && !mApp.getConfig().RUN_STANDALONE)
+    {
+        throw std::invalid_argument(
+            "The 'manualclose' command accepts parameters only if the "
+            "configuration includes RUN_STANDALONE=true.");
+    }
+
+    auto manualLedgerSeq = parseOptionalParam<uint32_t>(retMap, "ledgerSeq");
+    auto manualCloseTime = parseOptionalParam<TimePoint>(retMap, "closeTime");
+
+    retStr = mApp.manualClose(manualLedgerSeq, manualCloseTime);
 }
 
 void
@@ -449,16 +476,11 @@ CommandHandler::upgrades(std::string const& params, std::string& retStr)
         }
         p.mUpgradeTime = VirtualClock::tmToSystemPoint(tm);
 
-        uint32 baseFee;
-        uint32 baseReserve;
-        uint32 maxTxSize;
-        uint32 protocolVersion;
-
-        p.mBaseFee = maybeParseParam(retMap, "basefee", baseFee);
-        p.mBaseReserve = maybeParseParam(retMap, "basereserve", baseReserve);
-        p.mMaxTxSize = maybeParseParam(retMap, "maxtxsize", maxTxSize);
+        p.mBaseFee = parseOptionalParam<uint32>(retMap, "basefee");
+        p.mBaseReserve = parseOptionalParam<uint32>(retMap, "basereserve");
+        p.mMaxTxSize = parseOptionalParam<uint32>(retMap, "maxtxsize");
         p.mProtocolVersion =
-            maybeParseParam(retMap, "protocolversion", protocolVersion);
+            parseOptionalParam<uint32>(retMap, "protocolversion");
 
         mApp.getHerder().setUpgrades(p);
     }
@@ -471,6 +493,13 @@ CommandHandler::upgrades(std::string const& params, std::string& retStr)
     {
         retStr = fmt::format("Unknown mode: {}", s);
     }
+}
+
+void
+CommandHandler::selfCheck(std::string const&, std::string& retStr)
+{
+    ZoneScoped;
+    mApp.getHistoryArchiveManager().scheduleHistoryArchiveReportWork();
 }
 
 void
@@ -516,8 +545,7 @@ CommandHandler::scpInfo(std::string const& params, std::string& retStr)
     ZoneScoped;
     std::map<std::string, std::string> retMap;
     http::server::server::parseParams(params, retMap);
-    size_t lim = 2;
-    maybeParseParam(retMap, "limit", lim);
+    size_t lim = parseOptionalParamOrDefault<size_t>(retMap, "limit", 2);
 
     auto root = mApp.getHerder().getJsonInfo(lim, retMap["fullkeys"] == "true");
     retStr = root.toStyledString();
@@ -544,7 +572,7 @@ CommandHandler::ll(std::string const& params, std::string& retStr)
     }
     else
     {
-        el::Level level = Logging::getLLfromString(levelStr);
+        LogLevel level = Logging::getLLfromString(levelStr);
         if (partition.size())
         {
             partition = Logging::normalizePartition(partition);
@@ -592,14 +620,6 @@ CommandHandler::tx(std::string const& params, std::string& retStr)
             // and make sure it is valid
             TransactionQueue::AddResult status =
                 mApp.getHerder().recvTransaction(transaction);
-
-            if (status == TransactionQueue::AddResult::ADD_STATUS_PENDING)
-            {
-                StellarMessage msg;
-                msg.type(TRANSACTION);
-                msg.transaction() = envelope;
-                mApp.getOverlayManager().broadcastMessage(msg);
-            }
 
             output << "{"
                    << "\"status\": "
@@ -655,7 +675,7 @@ CommandHandler::setcursor(std::string const& params, std::string& retStr)
     http::server::server::parseParams(params, map);
     std::string const& id = map["id"];
 
-    uint32 cursor = parseParam<uint32>(map, "cursor");
+    uint32 cursor = parseRequiredParam<uint32>(map, "cursor");
 
     if (!ExternalQueue::validateResourceID(id))
     {
@@ -706,8 +726,8 @@ CommandHandler::maintenance(std::string const& params, std::string& retStr)
     http::server::server::parseParams(params, map);
     if (map["queue"] == "true")
     {
-        uint32_t count = 50000;
-        maybeParseParam(map, "count", count);
+        uint32_t count =
+            parseOptionalParamOrDefault<uint32_t>(map, "count", 50000);
 
         mApp.getMaintainer().performMaintenance(count);
         retStr = "Done";
@@ -725,8 +745,8 @@ CommandHandler::clearMetrics(std::string const& params, std::string& retStr)
     std::map<std::string, std::string> map;
     http::server::server::parseParams(params, map);
 
-    std::string domain;
-    maybeParseParam(map, "domain", domain);
+    std::string domain =
+        parseOptionalParamOrDefault<std::string>(map, "domain", "");
 
     mApp.clearMetrics(domain);
 
@@ -740,8 +760,9 @@ CommandHandler::surveyTopology(std::string const& params, std::string& retStr)
     std::map<std::string, std::string> map;
     http::server::server::parseParams(params, map);
 
-    auto duration = std::chrono::seconds(parseParam<uint32>(map, "duration"));
-    auto idString = parseParam<std::string>(map, "node");
+    auto duration =
+        std::chrono::seconds(parseRequiredParam<uint32>(map, "duration"));
+    auto idString = parseRequiredParam<std::string>(map, "node");
     NodeID id = KeyUtils::fromStrKey<PublicKey>(idString);
 
     auto& surveyManager = mApp.getOverlayManager().getSurveyManager();
@@ -780,20 +801,12 @@ CommandHandler::generateLoad(std::string const& params, std::string& retStr)
     ZoneScoped;
     if (mApp.getConfig().ARTIFICIALLY_GENERATE_LOAD_FOR_TESTING)
     {
-        uint32_t nAccounts = 1000;
-        uint32_t nTxs = 0;
-        uint32_t txRate = 10;
-        uint32_t batchSize = 100; // Only for account creations
-        uint32_t offset = 0;
-        uint32_t spikeSize = 0;
-        uint32_t spikeIntervalInt = 0;
-        std::string mode = "create";
-
         std::map<std::string, std::string> map;
         http::server::server::parseParams(params, map);
 
         bool isCreate;
-        maybeParseParam<std::string>(map, "mode", mode);
+        std::string mode =
+            parseOptionalParamOrDefault<std::string>(map, "mode", "create");
         if (mode == std::string("create"))
         {
             isCreate = true;
@@ -807,14 +820,20 @@ CommandHandler::generateLoad(std::string const& params, std::string& retStr)
             throw std::runtime_error("Unknown mode.");
         }
 
-        maybeParseParam(map, "accounts", nAccounts);
-        maybeParseParam(map, "txs", nTxs);
-        maybeParseParam(map, "batchsize", batchSize);
-        maybeParseParam(map, "offset", offset);
-        maybeParseParam(map, "txrate", txRate);
-        maybeParseParam(map, "spikeinterval", spikeIntervalInt);
+        uint32_t nAccounts =
+            parseOptionalParamOrDefault<uint32_t>(map, "accounts", 1000);
+        uint32_t nTxs = parseOptionalParamOrDefault<uint32_t>(map, "txs", 0);
+        uint32_t txRate =
+            parseOptionalParamOrDefault<uint32_t>(map, "txrate", 10);
+        uint32_t batchSize = parseOptionalParamOrDefault<uint32_t>(
+            map, "batchsize", 100); // Only for account creations
+        uint32_t offset =
+            parseOptionalParamOrDefault<uint32_t>(map, "offset", 0);
+        uint32_t spikeIntervalInt =
+            parseOptionalParamOrDefault<uint32_t>(map, "spikeinterval", 0);
         std::chrono::seconds spikeInterval(spikeIntervalInt);
-        maybeParseParam(map, "spikesize", spikeSize);
+        uint32_t spikeSize =
+            parseOptionalParamOrDefault<uint32_t>(map, "spikesize", 0);
 
         uint32_t numItems = isCreate ? nAccounts : nTxs;
         std::string itemType = isCreate ? "accounts" : "txs";
@@ -928,24 +947,11 @@ CommandHandler::testTx(std::string const& params, std::string& retStr)
             txFrame = fromAccount.tx({payment(toAccount, paymentAmount)});
         }
 
-        switch (mApp.getHerder().recvTransaction(txFrame))
+        auto status = mApp.getHerder().recvTransaction(txFrame);
+        root["status"] = TX_STATUS_STRING[static_cast<int>(status)];
+        if (status == TransactionQueue::AddResult::ADD_STATUS_ERROR)
         {
-        case TransactionQueue::AddResult::ADD_STATUS_PENDING:
-            root["status"] = "pending";
-            break;
-        case TransactionQueue::AddResult::ADD_STATUS_DUPLICATE:
-            root["status"] = "duplicate";
-            break;
-        case TransactionQueue::AddResult::ADD_STATUS_ERROR:
-            root["status"] = "error";
-            root["detail"] =
-                xdr::xdr_to_string(txFrame->getResult().result.code());
-            break;
-        case TransactionQueue::AddResult::ADD_STATUS_TRY_AGAIN_LATER:
-            root["status"] = "try_again_later";
-            break;
-        default:
-            assert(false);
+            root["detail"] = xdr_to_string(txFrame->getResult().result.code());
         }
     }
     else

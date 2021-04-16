@@ -29,6 +29,7 @@
 #include "transactions/TransactionBridge.h"
 #include "transactions/TransactionFrame.h"
 #include "transactions/TransactionUtils.h"
+#include "util/Math.h"
 
 #include "xdr/Stellar-ledger.h"
 #include "xdrpp/marshal.h"
@@ -53,7 +54,6 @@ TEST_CASE("standalone", "[herder][acceptance]")
     cfg.QUORUM_SET.validators.push_back(v0NodeID);
 
     for_all_versions(cfg, [&](Config const& cfg1) {
-
         VirtualClock clock;
         Application::pointer app = createTestApplication(clock, cfg1);
 
@@ -455,7 +455,11 @@ testTxSetWithFeeBumps(uint32 protocolVersion)
     auto checkTrimCheck = [&](std::vector<TransactionFrameBasePtr> const& txs) {
         txSet->sortForHash();
         REQUIRE(!txSet->checkValid(*app, 0, 0));
-        REQUIRE(txSet->trimInvalid(*app, 0, 0) == txs);
+        auto trimmedSet = txSet->trimInvalid(*app, 0, 0);
+        std::sort(trimmedSet.begin(), trimmedSet.end());
+        auto txsNormalized = txs;
+        std::sort(txsNormalized.begin(), txsNormalized.end());
+        REQUIRE(trimmedSet == txsNormalized);
         REQUIRE(txSet->checkValid(*app, 0, 0));
     };
 
@@ -1382,6 +1386,11 @@ testSCPDriver(uint32 protocolVersion, uint32_t maxTxSize, size_t expectedOps,
                            : tx->getEnvelope().v1().tx.timeBounds.activate();
             tb.minTime = minTime;
             tb.maxTime = maxTime;
+            auto& sig = tx->getEnvelope().type() == ENVELOPE_TYPE_TX_V0
+                            ? tx->getEnvelope().v0().signatures
+                            : tx->getEnvelope().v1().signatures;
+            sig.clear();
+            tx->addSignature(root.getSecretKey());
             auto txSet = std::make_shared<TxSetFrame>(
                 app->getLedgerManager().getLastClosedLedgerHeader().hash);
             txSet->add(tx);
@@ -2305,10 +2314,10 @@ TEST_CASE("do not flood invalid transactions", "[herder]")
 {
     VirtualClock clock;
     auto cfg = getTestConfig();
+    cfg.FLOOD_TX_PERIOD_MS = 0;
     auto app = createTestApplication(clock, cfg);
     app->start();
 
-    auto& om = app->getOverlayManager();
     auto& lm = app->getLedgerManager();
     auto& herder = static_cast<HerderImpl&>(app->getHerder());
     auto& tq = herder.getTransactionQueue();
@@ -2318,16 +2327,18 @@ TEST_CASE("do not flood invalid transactions", "[herder]")
 
     auto tx1a = acc.tx({payment(acc, 1)});
     auto tx1r = root.tx({bumpSequence(INT64_MAX)});
+    // this will be invalid after tx1r gets applied
     auto tx2r = root.tx({payment(root, 1)});
 
     herder.recvTransaction(tx1a);
     herder.recvTransaction(tx1r);
     herder.recvTransaction(tx2r);
 
-    auto numBroadcast = om.getOverlayMetrics().mMessagesBroadcast.count();
+    size_t numBroadcast = 0;
+    tq.mTxBroadcastedEvent = [&](TransactionFrameBasePtr&) { ++numBroadcast; };
+
     externalize(cfg.NODE_SEED, lm, herder, {tx1r});
-    REQUIRE(numBroadcast + 1 ==
-            om.getOverlayMetrics().mMessagesBroadcast.count());
+    REQUIRE(numBroadcast == 1);
 
     auto const& lhhe = lm.getLastClosedLedgerHeader();
     auto txSet = tq.toTxSet(lhhe);
@@ -2337,67 +2348,412 @@ TEST_CASE("do not flood invalid transactions", "[herder]")
     REQUIRE(txSet->checkValid(*app, 0, 0));
 }
 
-TEST_CASE("do not flood too many transactions", "[herder]")
+TEST_CASE("do not flood too many transactions", "[herder][transactionqueue]")
 {
-    VirtualClock clock;
-    auto cfg = getTestConfig();
-    cfg.TESTING_UPGRADE_MAX_TX_SET_SIZE = 500;
-    auto app = createTestApplication(clock, cfg);
-    app->start();
+    auto test = [](bool delayed, uint32_t numOps) {
+        auto networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
+        auto simulation = std::make_shared<Simulation>(
+            Simulation::OVER_LOOPBACK, networkID, [&](int i) {
+                auto cfg = getTestConfig(i);
+                cfg.TESTING_UPGRADE_MAX_TX_SET_SIZE = 500;
+                cfg.NODE_IS_VALIDATOR = false;
+                cfg.FORCE_SCP = false;
+                cfg.FLOOD_TX_PERIOD_MS = delayed ? 100 : 0;
+                cfg.FLOOD_OP_RATE_PER_LEDGER = 2.0;
+                return cfg;
+            });
 
-    auto& om = app->getOverlayManager();
-    auto& lm = app->getLedgerManager();
-    auto& herder = static_cast<HerderImpl&>(app->getHerder());
-    auto& tq = herder.getTransactionQueue();
+        auto mainKey = SecretKey::fromSeed(sha256("main"));
+        auto otherKey = SecretKey::fromSeed(sha256("other"));
 
-    auto root = TestAccount::createRoot(*app);
-    auto acc = root.create("A", lm.getLastMinBalance(2));
+        SCPQuorumSet qset;
+        qset.threshold = 1;
+        qset.validators.push_back(mainKey.getPublicKey());
 
-    auto genTx = [&](TestAccount& source, uint32_t numOps) {
-        std::vector<Operation> ops;
-        for (int64_t i = 1; i <= numOps; ++i)
+        simulation->addNode(mainKey, qset);
+        simulation->addNode(otherKey, qset);
+
+        simulation->addPendingConnection(mainKey.getPublicKey(),
+                                         otherKey.getPublicKey());
+        simulation->startAllNodes();
+        simulation->crankForAtLeast(std::chrono::seconds(1), false);
+
+        auto app = simulation->getNode(mainKey.getPublicKey());
+        auto const& cfg = app->getConfig();
+        auto& lm = app->getLedgerManager();
+        auto& herder = static_cast<HerderImpl&>(app->getHerder());
+        auto& tq = herder.getTransactionQueue();
+
+        auto root = TestAccount::createRoot(*app);
+        std::vector<TestAccount> accs;
+
+        // number of accounts to use
+        int const nbAccounts = 40;
+        // number of transactions to generate per fee
+        // groups are
+        int const feeGroupMaxSize = 7;
+        // used to track fee
+        int feeGroupSize = 0;
+        uint32 curFeeOffset = 10000;
+
+        accs.reserve(nbAccounts);
+        for (int i = 0; i < nbAccounts; ++i)
         {
-            ops.emplace_back(payment(source, i));
+            accs.emplace_back(
+                root.create(fmt::format("A{}", i), lm.getLastMinBalance(2)));
         }
-        auto tx = source.tx(ops);
-        REQUIRE(herder.recvTransaction(tx) ==
-                TransactionQueue::AddResult::ADD_STATUS_PENDING);
-        return tx;
-    };
+        std::deque<uint32> fees;
 
-    auto test = [&](uint32_t numOps) {
-        size_t maxOps = cfg.TESTING_UPGRADE_MAX_TX_SET_SIZE;
+        auto genTx = [&](TestAccount& source, uint32_t numOps, bool highFee) {
+            std::vector<Operation> ops;
+            for (int64_t i = 1; i <= numOps; ++i)
+            {
+                ops.emplace_back(payment(source, i));
+            }
+            auto tx = source.tx(ops);
+            auto txFee = static_cast<uint32_t>(tx->getFeeBid());
+            if (highFee)
+            {
+                txFee += 100000;
+                fees.emplace_front(txFee);
+            }
+            else
+            {
+                txFee += curFeeOffset;
+                fees.emplace_back(txFee);
+            }
+            setFee(tx, txFee);
+            getSignatures(tx).clear();
+            tx->addSignature(source.getSecretKey());
+            if (++feeGroupSize == feeGroupMaxSize)
+            {
+                feeGroupSize = 0;
+                curFeeOffset--;
+            }
 
-        auto tx1a = genTx(acc, numOps);
-        auto tx1r = genTx(root, numOps);
+            REQUIRE(herder.recvTransaction(tx) ==
+                    TransactionQueue::AddResult::ADD_STATUS_PENDING);
+            return tx;
+        };
+
+        auto genTxRandAccount = [&](uint32_t numOps) {
+            genTx(rand_element(accs), numOps, false);
+        };
+
+        size_t const maxOps = cfg.TESTING_UPGRADE_MAX_TX_SET_SIZE;
+
+        auto tx1a = genTx(accs[0], numOps, false);
+        auto tx1r = genTx(root, numOps, false);
         size_t numTx = 2;
-        while ((numTx + 2) * numOps <= maxOps)
+        for (; (numTx + 2) * numOps <= maxOps; ++numTx)
         {
-            genTx(acc, numOps);
-            genTx(root, numOps);
-            numTx += 2;
+            genTxRandAccount(numOps);
         }
+
+        std::map<AccountID, SequenceNumber> bcastTracker;
+        TransactionFrameBasePtr lastTx;
+        tq.mTxBroadcastedEvent = [&](TransactionFrameBasePtr& tx) {
+            // ensure that sequence numbers are correct per account
+            auto expected = tx->getSeqNum();
+            std::swap(bcastTracker[tx->getSourceID()], expected);
+            if (expected != 0)
+            {
+                expected++;
+                REQUIRE(expected == tx->getSeqNum());
+            }
+            // check if we have the expected fee
+            REQUIRE(tx->getFeeBid() == fees.front());
+            fees.pop_front();
+        };
 
         REQUIRE(tq.toTxSet({})->mTransactions.size() == numTx);
 
-        auto numBroadcast = om.getOverlayMetrics().mMessagesBroadcast.count();
-        externalize(cfg.NODE_SEED, lm, herder, {tx1a, tx1r});
-        REQUIRE(numBroadcast + (numTx - 2) ==
-                om.getOverlayMetrics().mMessagesBroadcast.count());
+        // remove the first two transactions that won't be
+        // re-broadcasted during externalize
+        fees.pop_front();
+        fees.pop_front();
 
-        REQUIRE(tq.toTxSet({})->mTransactions.size() == numTx - 2);
+        size_t numBroadcast = 0;
+        tq.mTxBroadcastedEvent = [&](TransactionFrameBasePtr&) {
+            ++numBroadcast;
+        };
+
+        externalize(cfg.NODE_SEED, lm, herder, {tx1a, tx1r});
+
+        if (delayed)
+        {
+            // no broadcast right away
+            REQUIRE(numBroadcast == 0);
+            // wait for a bit more than a broadcast period
+            // rate per period is
+            // 2*(maxOps=500)*(FLOOD_TX_PERIOD_MS=100)/((ledger time=5)*1000)
+            // 1000*100/5000=20
+            auto constexpr opsRatePerPeriod = 20;
+            auto broadcastPeriod =
+                std::chrono::milliseconds(cfg.FLOOD_TX_PERIOD_MS);
+            auto const delta = std::chrono::milliseconds(1);
+            simulation->crankForAtLeast(broadcastPeriod + delta, false);
+
+            if (numOps <= opsRatePerPeriod)
+            {
+                auto opsBroadcasted = numBroadcast * numOps;
+                // goal reached
+                REQUIRE(opsBroadcasted <= opsRatePerPeriod);
+                // an extra tx would have exceeded the limit
+                REQUIRE(opsBroadcasted + numOps > opsRatePerPeriod);
+            }
+            else
+            {
+                // can only flood up to 1 transaction per cycle
+                REQUIRE(numBroadcast <= 1);
+            }
+            // as we're waiting for a ledger worth of capacity
+            // and we have a multiplier of 2
+            // it should take about half a ledger period to broadcast everything
+
+            // we wait a bit more, and inject an extra high fee transaction
+            // from an account with no pending transactions
+            // this transactions should be the next one to be broadcasted
+            simulation->crankForAtLeast(std::chrono::milliseconds(500), false);
+            genTx(root, numOps, true);
+
+            simulation->crankForAtLeast(std::chrono::milliseconds(2000), false);
+            REQUIRE(numBroadcast == (numTx - 1));
+            REQUIRE(tq.toTxSet({})->mTransactions.size() == numTx - 1);
+        }
+        else
+        {
+            REQUIRE(numBroadcast == (numTx - 2));
+            REQUIRE(tq.toTxSet({})->mTransactions.size() == numTx - 2);
+            // check that there is no broadcast after that
+            simulation->crankForAtLeast(std::chrono::seconds(1), false);
+            REQUIRE(numBroadcast == (numTx - 2));
+            REQUIRE(tq.toTxSet({})->mTransactions.size() == numTx - 2);
+        }
+        simulation->stopAllNodes();
     };
 
-    SECTION("one operation per transaction")
+    auto testOps = [&](bool delayed) {
+        SECTION("one operation per transaction")
+        {
+            test(delayed, 1);
+        }
+        SECTION("a few operations per transaction")
+        {
+            test(delayed, 7);
+        }
+        SECTION("full transactions")
+        {
+            test(delayed, 100);
+        }
+    };
+    SECTION("no delay")
     {
-        test(1);
+        testOps(false);
     }
-    SECTION("a few operations per transaction")
+    SECTION("delayed")
     {
-        test(7);
+        testOps(true);
     }
-    SECTION("full transactions")
+}
+
+TEST_CASE("slot herder policy", "[herder]")
+{
+    SIMULATION_CREATE_NODE(0);
+    SIMULATION_CREATE_NODE(1);
+    SIMULATION_CREATE_NODE(2);
+    SIMULATION_CREATE_NODE(3);
+
+    Config cfg(getTestConfig());
+
+    // start in sync
+    cfg.FORCE_SCP = true;
+    cfg.MANUAL_CLOSE = false;
+    cfg.NODE_SEED = v0SecretKey;
+    cfg.MAX_SLOTS_TO_REMEMBER = 5;
+    cfg.NODE_IS_VALIDATOR = false;
+
+    cfg.QUORUM_SET.threshold = 3; // 3 out of 4
+    cfg.QUORUM_SET.validators.push_back(v1NodeID);
+    cfg.QUORUM_SET.validators.push_back(v2NodeID);
+    cfg.QUORUM_SET.validators.push_back(v3NodeID);
+
+    VirtualClock clock;
+    Application::pointer app = createTestApplication(clock, cfg);
+
+    auto& herder = static_cast<HerderImpl&>(app->getHerder());
+
+    auto qSet = herder.getSCP().getLocalQuorumSet();
+    auto qsetHash = sha256(xdr::xdr_to_opaque(qSet));
+
+    auto recvExternalize = [&](SecretKey const& sk, uint64_t slotIndex,
+                               Hash const& prevHash) {
+        auto envelope = SCPEnvelope{};
+        envelope.statement.slotIndex = slotIndex;
+        envelope.statement.pledges.type(SCP_ST_EXTERNALIZE);
+        auto& ext = envelope.statement.pledges.externalize();
+        TxSetFramePtr txSet = std::make_shared<TxSetFrame>(prevHash);
+
+        StellarValue sv{txSet->getContentsHash(), (TimePoint)slotIndex,
+                        xdr::xvector<UpgradeType, 6>{}, STELLAR_VALUE_BASIC};
+        if (herder.getHerderSCPDriver().compositeValueType() ==
+            STELLAR_VALUE_SIGNED)
+        {
+            // sign values with the same secret key
+            herder.signStellarValue(v1SecretKey, sv);
+        }
+        ext.commit.counter = 1;
+        ext.commit.value = xdr::xdr_to_opaque(sv);
+        ext.commitQuorumSetHash = qsetHash;
+        ext.nH = 1;
+        envelope.statement.nodeID = sk.getPublicKey();
+        herder.signEnvelope(sk, envelope);
+        auto res = herder.recvSCPEnvelope(envelope, qSet, *txSet);
+        REQUIRE(res == Herder::ENVELOPE_STATUS_READY);
+    };
+
+    auto const LIMIT = cfg.MAX_SLOTS_TO_REMEMBER;
+
+    auto recvExternPeers = [&](uint32 seq, Hash const& prev, bool quorum) {
+        recvExternalize(v1SecretKey, seq, prev);
+        recvExternalize(v2SecretKey, seq, prev);
+        if (quorum)
+        {
+            recvExternalize(v3SecretKey, seq, prev);
+        }
+    };
+    // first, close a few ledgers, see if we actually retain the right
+    // number of ledgers
+    auto timeout = clock.now() + std::chrono::minutes(10);
+    for (uint32 i = 0; i < LIMIT * 2; ++i)
     {
-        test(100);
+        auto seq = app->getLedgerManager().getLastClosedLedgerNum() + 1;
+        auto prev = app->getLedgerManager().getLastClosedLedgerHeader().hash;
+        recvExternPeers(seq, prev, true);
+        while (app->getLedgerManager().getLastClosedLedgerNum() < seq)
+        {
+            clock.crank(true);
+            REQUIRE(clock.now() < timeout);
+        }
+    }
+    REQUIRE(herder.getState() == Herder::HERDER_TRACKING_STATE);
+    REQUIRE(herder.getSCP().getKnownSlotsCount() == LIMIT);
+
+    auto oneSec = std::chrono::seconds(1);
+    // let the node go out of sync, it should reach the desired state
+    timeout = clock.now() + Herder::CONSENSUS_STUCK_TIMEOUT_SECONDS + oneSec;
+    while (herder.getState() == Herder::HERDER_TRACKING_STATE)
+    {
+        clock.crank(false);
+        REQUIRE(clock.now() < timeout);
+    }
+
+    auto const PARTIAL = Herder::LEDGER_VALIDITY_BRACKET;
+    // create a gap
+    auto newSeq = app->getLedgerManager().getLastClosedLedgerNum() + 2;
+    for (uint32 i = 0; i < PARTIAL; ++i)
+    {
+        auto prev = app->getLedgerManager().getLastClosedLedgerHeader().hash;
+        // advance clock to ensure that ct is valid
+        clock.sleep_for(oneSec);
+        recvExternPeers(newSeq++, prev, false);
+    }
+    REQUIRE(herder.getSCP().getKnownSlotsCount() == (LIMIT + PARTIAL));
+
+    timeout = clock.now() + Herder::OUT_OF_SYNC_RECOVERY_TIMER + oneSec;
+    while (herder.getSCP().getKnownSlotsCount() !=
+           Herder::LEDGER_VALIDITY_BRACKET)
+    {
+        clock.sleep_for(oneSec);
+        clock.crank(false);
+        REQUIRE(clock.now() < timeout);
+    }
+
+    Hash prevHash;
+    // add a bunch more - not v-blocking
+    for (uint32 i = 0; i < LIMIT; ++i)
+    {
+        recvExternalize(v1SecretKey, newSeq++, prevHash);
+    }
+    // policy here is to not do anything
+    auto waitForRecovery = [&]() {
+        timeout = clock.now() + Herder::OUT_OF_SYNC_RECOVERY_TIMER + oneSec;
+        while (clock.now() < timeout)
+        {
+            clock.sleep_for(oneSec);
+            clock.crank(false);
+        }
+    };
+
+    waitForRecovery();
+    auto const FULLSLOTS = Herder::LEDGER_VALIDITY_BRACKET + LIMIT;
+    REQUIRE(herder.getSCP().getKnownSlotsCount() == FULLSLOTS);
+
+    // now inject a few more, policy should apply here, with
+    // partial in between
+    // lower slots getting dropped so the total number of slots in memory is
+    // constant
+    auto cutOff = Herder::LEDGER_VALIDITY_BRACKET - 1;
+    for (uint32 i = 0; i < cutOff; ++i)
+    {
+        recvExternPeers(newSeq++, prevHash, false);
+        waitForRecovery();
+        REQUIRE(herder.getSCP().getKnownSlotsCount() == FULLSLOTS);
+    }
+    // adding one more, should get rid of the partial slots
+    recvExternPeers(newSeq++, prevHash, false);
+    waitForRecovery();
+    REQUIRE(herder.getSCP().getKnownSlotsCount() ==
+            Herder::LEDGER_VALIDITY_BRACKET);
+}
+
+TEST_CASE("exclude transactions by operation type", "[herder]")
+{
+    SECTION("operation is received when no filter")
+    {
+        VirtualClock clock;
+        auto cfg = getTestConfig();
+        Application::pointer app = createTestApplication(clock, cfg);
+        app->start();
+
+        auto root = TestAccount::createRoot(*app);
+        auto acc = getAccount("acc");
+        auto tx = root.tx({createAccount(acc.getPublicKey(), 1)});
+
+        REQUIRE(app->getHerder().recvTransaction(tx) ==
+                TransactionQueue::AddResult::ADD_STATUS_PENDING);
+    }
+
+    SECTION("filter excludes transaction containing specified operation")
+    {
+        VirtualClock clock;
+        auto cfg = getTestConfig();
+        cfg.EXCLUDE_TRANSACTIONS_CONTAINING_OPERATION_TYPE = {CREATE_ACCOUNT};
+        Application::pointer app = createTestApplication(clock, cfg);
+        app->start();
+
+        auto root = TestAccount::createRoot(*app);
+        auto acc = getAccount("acc");
+        auto tx = root.tx({createAccount(acc.getPublicKey(), 1)});
+
+        REQUIRE(app->getHerder().recvTransaction(tx) ==
+                TransactionQueue::AddResult::ADD_STATUS_FILTERED);
+    }
+
+    SECTION("filter does not exclude transaction containing non-specified "
+            "operation")
+    {
+        VirtualClock clock;
+        auto cfg = getTestConfig();
+        cfg.EXCLUDE_TRANSACTIONS_CONTAINING_OPERATION_TYPE = {MANAGE_DATA};
+        Application::pointer app = createTestApplication(clock, cfg);
+        app->start();
+
+        auto root = TestAccount::createRoot(*app);
+        auto acc = getAccount("acc");
+        auto tx = root.tx({createAccount(acc.getPublicKey(), 1)});
+
+        REQUIRE(app->getHerder().recvTransaction(tx) ==
+                TransactionQueue::AddResult::ADD_STATUS_PENDING);
     }
 }

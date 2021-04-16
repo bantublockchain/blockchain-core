@@ -109,7 +109,7 @@ makeValid(AccountEntry& a)
 
     if (a.inflationDest)
     {
-        *a.inflationDest = PubKeyUtils::random();
+        *a.inflationDest = PubKeyUtils::pseudoRandomForTesting();
     }
 
     std::sort(
@@ -131,7 +131,7 @@ makeValid(AccountEntry& a)
     {
         a.seqNum = -a.seqNum;
     }
-    a.flags = a.flags & MASK_ACCOUNT_FLAGS;
+    a.flags = a.flags & MASK_ACCOUNT_FLAGS_V16;
 
     if (a.ext.v() == 1)
     {
@@ -164,7 +164,8 @@ makeValid(AccountEntry& a)
                 std::swap(extV2.numSponsored, extV2.numSponsoring);
             }
 
-            extV2.signerSponsoringIDs.resize(a.signers.size());
+            extV2.signerSponsoringIDs.resize(
+                static_cast<uint32_t>(a.signers.size()));
         }
     }
 }
@@ -181,7 +182,7 @@ makeValid(TrustLineEntry& tl)
     tl.asset.type(ASSET_TYPE_CREDIT_ALPHANUM4);
     strToAssetCode(tl.asset.alphaNum4().assetCode, "USD");
     clampHigh<int64_t>(tl.limit, tl.balance);
-    tl.flags = tl.flags & MASK_TRUSTLINE_FLAGS;
+    tl.flags = tl.flags & MASK_TRUSTLINE_FLAGS_V16;
 
     if (tl.ext.v() == 1)
     {
@@ -224,6 +225,14 @@ makeValid(ClaimableBalanceEntry& c)
     c.amount = std::abs(c.amount);
     clampLow<int64>(1, c.amount);
 
+    // It is not valid for claimants to be empty, so if this occurs we default
+    // to a single claimant for the zero account with
+    // CLAIM_PREDICATE_UNCONDITIONAL.
+    if (c.claimants.empty())
+    {
+        c.claimants.resize(1);
+    }
+
     c.asset.type(ASSET_TYPE_CREDIT_ALPHANUM4);
     strToAssetCode(c.asset.alphaNum4().assetCode, "CAD");
 }
@@ -253,7 +262,8 @@ makeValid(std::vector<LedgerHeaderHistoryEntry>& lhv,
                 lh.header.ledgerVersion += 1;
                 break;
             case HistoryManager::VERIFY_STATUS_ERR_BAD_HASH:
-                lh.header.previousLedgerHash = HashUtils::random();
+                lh.header.previousLedgerHash =
+                    HashUtils::pseudoRandomForTesting();
                 break;
             case HistoryManager::VERIFY_STATUS_ERR_UNDERSHOT:
                 lh.header.ledgerSeq -= 1;
@@ -269,7 +279,7 @@ makeValid(std::vector<LedgerHeaderHistoryEntry>& lhv,
         if (i == randomIndex &&
             state == HistoryManager::VERIFY_STATUS_ERR_BAD_HASH && rand_flip())
         {
-            lh.hash = HashUtils::random();
+            lh.hash = HashUtils::pseudoRandomForTesting();
         }
         else
         {

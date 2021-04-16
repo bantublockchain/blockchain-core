@@ -5,6 +5,7 @@
 #define CATCH_CONFIG_RUNNER
 
 #include "util/asio.h"
+#include <autocheck/autocheck.hpp>
 
 #include "ledger/LedgerTxn.h"
 #include "ledger/LedgerTxnHeader.h"
@@ -55,7 +56,9 @@ struct ReseedPRNGListener : Catch::TestEventListenerBase
     {
         srand(sCommandLineSeed);
         gRandomEngine.seed(sCommandLineSeed);
+        shortHash::seed(sCommandLineSeed);
         Catch::rng().seed(sCommandLineSeed);
+        autocheck::rng().seed(sCommandLineSeed);
     }
     virtual void
     testCaseStarting(Catch::TestCaseInfo const& testInfo) override
@@ -73,7 +76,7 @@ static std::vector<std::unique_ptr<Config>> gTestCfg[Config::TESTDB_MODES];
 static std::vector<TmpDir> gTestRoots;
 static bool gTestAllVersions{false};
 static std::vector<uint32> gVersionsToTest;
-static int gBaseInstance{0};
+int gBaseInstance{0};
 
 bool force_sqlite = (std::getenv("STELLAR_FORCE_SQLITE") != nullptr);
 
@@ -195,7 +198,7 @@ getTestConfig(int instanceNumber, Config::TestDbMode mode)
 int
 runTest(CommandLineArgs const& args)
 {
-    el::Level logLevel{el::Level::Info};
+    LogLevel logLevel{LogLevel::LVL_INFO};
 
     Catch::Session session{};
 
@@ -259,8 +262,8 @@ runTest(CommandLineArgs const& args)
     Logging::setLoggingToFile(logFile);
     Logging::setLogLevel(logLevel, nullptr);
 
-    LOG(INFO) << "Testing stellar-core " << STELLAR_CORE_VERSION;
-    LOG(INFO) << "Logging to " << logFile;
+    LOG_INFO(DEFAULT_LOG, "Testing stellar-core {}", STELLAR_CORE_VERSION);
+    LOG_INFO(DEFAULT_LOG, "Logging to {}", logFile);
 
     if (gVersionsToTest.empty())
     {
@@ -279,7 +282,7 @@ runTest(CommandLineArgs const& args)
     gTestCfg->clear();
     if (r != 0)
     {
-        LOG(ERROR) << "Nonzero test result with --rng-seed " << seed;
+        LOG_ERROR(DEFAULT_LOG, "Nonzero test result with --rng-seed {}", seed);
     }
     return r;
 }

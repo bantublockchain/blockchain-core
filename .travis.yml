@@ -15,22 +15,31 @@ addons:
     - autoconf
     - automake
     - bison
-    - clang-5.0
-    - cpp-6
+    - clang-8
+    - cpp-7
     - flex
-    - gcc-6
-    - g++-6
+    - gcc-7
+    - g++-7
     - libpq-dev
     - libpq5
-    - libstdc++6
+    - libstdc++-7-dev
     - libtool
-    - llvm-5.0
+    - llvm-8
     - pkg-config
-    - clang-format-5.0
+    - clang-format-8
     - perl
     - parallel
+    - gdb
+    - libunwind-dev
 
-script: ./travis-build.sh
+before_script:
+  - ulimit -c unlimited -S
+
+script: ./ci-build.sh
+
+after_failure:
+  - COREFILE=$(find . -maxdepth 1 -name "core*" | head -n 1)
+  - if [[ -f "$COREFILE" ]]; then gdb -c "$COREFILE" ./src/stellar-core -ex "thread apply all bt" -ex "set pagination 0" -batch; fi
 
 cache:
   directories:
@@ -54,8 +63,8 @@ matrix:
   include:
     - stage: compile
       compiler: clang
-      script: ./travis-build.sh --disable-tests
+      script: ./ci-build.sh --disable-tests
     - stage: compile
       compiler: gcc
-      script: ./travis-build.sh --disable-tests
+      script: ./ci-build.sh --disable-tests
 

@@ -6,12 +6,14 @@
 
 // C++ value-semantic / convenience wrapper around C bitset_t
 
+#include "util/Logging.h"
 #include <functional>
 #include <memory>
 #include <ostream>
 #include <set>
 
-extern "C" {
+extern "C"
+{
 #include "util/cbitset.h"
 };
 
@@ -157,12 +159,6 @@ class BitSet
         return bitset_subseteq(mPtr, other.mPtr);
     }
 
-    bool
-    operator<=(BitSet const& other) const
-    {
-        return isSubsetEq(other);
-    }
-
     size_t
     size() const
     {
@@ -209,10 +205,6 @@ class BitSet
     {
         size_t tmp = 0;
         return !nextSet(tmp);
-    }
-    operator bool() const
-    {
-        return !empty();
     }
     size_t
     min() const
@@ -351,6 +343,25 @@ class BitSet
     {
         streamWith(out, [](std::ostream& out, size_t i) { out << i; });
     }
+    class HashFunction
+    {
+        std::hash<uint64_t> mHasher;
+
+      public:
+        size_t
+        operator()(BitSet const& bitset) const noexcept
+        {
+            // Implementation taken from Boost.
+            // https://www.boost.org/doc/libs/1_35_0/doc/html/boost/hash_combine_id241013.html
+            size_t seed = 0;
+            for (size_t i = 0; i < bitset.mPtr->arraysize; i++)
+            {
+                seed ^= mHasher(bitset.mPtr->array[i]) + 0x9e3779b9 +
+                        (seed << 6) + (seed >> 2);
+            }
+            return seed;
+        }
+    };
 };
 
 inline std::ostream&

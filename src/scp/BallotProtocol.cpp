@@ -16,6 +16,8 @@
 #include "xdrpp/marshal.h"
 #include <Tracy.hpp>
 #include <functional>
+#include <numeric>
+#include <sstream>
 
 namespace stellar
 {
@@ -160,9 +162,8 @@ BallotProtocol::processEnvelope(SCPEnvelopeWrapperPtr envelope, bool self)
     {
         if (self)
         {
-            CLOG(ERROR, "SCP")
-                << "not sane statement from self, skipping "
-                << "  e: " << mSlot.getSCP().envToStr(envelope->getEnvelope());
+            CLOG_ERROR(SCP, "not sane statement from self, skipping   e: {}",
+                       mSlot.getSCP().envToStr(envelope->getEnvelope()));
         }
 
         return SCP::EnvelopeState::INVALID;
@@ -172,14 +173,13 @@ BallotProtocol::processEnvelope(SCPEnvelopeWrapperPtr envelope, bool self)
     {
         if (self)
         {
-            CLOG(ERROR, "SCP")
-                << "stale statement from self, skipping "
-                << "  e: " << mSlot.getSCP().envToStr(envelope->getEnvelope());
+            CLOG_ERROR(SCP, "stale statement from self, skipping   e: {}",
+                       mSlot.getSCP().envToStr(envelope->getEnvelope()));
         }
         else
         {
-            CLOG(TRACE, "SCP") << "stale statement, skipping "
-                               << " i: " << mSlot.getSlotIndex();
+            CLOG_TRACE(SCP, "stale statement, skipping  i: {}",
+                       mSlot.getSlotIndex());
         }
 
         return SCP::EnvelopeState::INVALID;
@@ -192,14 +192,12 @@ BallotProtocol::processEnvelope(SCPEnvelopeWrapperPtr envelope, bool self)
     {
         if (self)
         {
-            CLOG(ERROR, "SCP")
-                << "invalid value from self, skipping "
-                << "  e: " << mSlot.getSCP().envToStr(envelope->getEnvelope());
+            CLOG_ERROR(SCP, "invalid value from self, skipping   e: {}",
+                       mSlot.getSCP().envToStr(envelope->getEnvelope()));
         }
         else
         {
-            CLOG(TRACE, "SCP") << "invalid value "
-                               << " i: " << mSlot.getSlotIndex();
+            CLOG_TRACE(SCP, "invalid value  i: {}", mSlot.getSlotIndex());
         }
 
         return SCP::EnvelopeState::INVALID;
@@ -228,9 +226,10 @@ BallotProtocol::processEnvelope(SCPEnvelopeWrapperPtr envelope, bool self)
 
     if (self)
     {
-        CLOG(ERROR, "SCP") << "externalize statement with invalid value from "
-                              "self, skipping e: "
-                           << mSlot.getSCP().envToStr(envelope->getEnvelope());
+        CLOG_ERROR(SCP,
+                   "externalize statement with invalid value from "
+                   "self, skipping e: {}",
+                   mSlot.getSCP().envToStr(envelope->getEnvelope()));
     }
 
     return SCP::EnvelopeState::INVALID;
@@ -240,10 +239,13 @@ bool
 BallotProtocol::isStatementSane(SCPStatement const& st, bool self)
 {
     auto qSet = mSlot.getQuorumSetFromStatement(st);
-    bool res = qSet != nullptr && isQuorumSetSane(*qSet, false);
+    const char* errString = nullptr;
+    bool res = qSet != nullptr && isQuorumSetSane(*qSet, false, errString);
     if (!res)
     {
-        CLOG(DEBUG, "SCP") << "Invalid quorum set received";
+        CLOG_DEBUG(SCP, "Invalid quorum set received : {}",
+                   (errString ? errString : "<empty>"));
+
         return false;
     }
 
@@ -268,7 +270,7 @@ BallotProtocol::isStatementSane(SCPStatement const& st, bool self)
 
         if (!isOK)
         {
-            CLOG(TRACE, "SCP") << "Malformed PREPARE message";
+            CLOG_TRACE(SCP, "Malformed PREPARE message");
             res = false;
         }
     }
@@ -282,7 +284,7 @@ BallotProtocol::isStatementSane(SCPStatement const& st, bool self)
         res = res && (c.nCommit <= c.nH);
         if (!res)
         {
-            CLOG(TRACE, "SCP") << "Malformed CONFIRM message";
+            CLOG_TRACE(SCP, "Malformed CONFIRM message");
         }
     }
     break;
@@ -295,7 +297,7 @@ BallotProtocol::isStatementSane(SCPStatement const& st, bool self)
 
         if (!res)
         {
-            CLOG(TRACE, "SCP") << "Malformed EXTERNALIZE message";
+            CLOG_TRACE(SCP, "Malformed EXTERNALIZE message");
         }
     }
     break;
@@ -310,7 +312,7 @@ bool
 BallotProtocol::abandonBallot(uint32 n)
 {
     ZoneScoped;
-    CLOG(TRACE, "SCP") << "BallotProtocol::abandonBallot";
+    CLOG_TRACE(SCP, "BallotProtocol::abandonBallot");
     bool res = false;
     auto v = mSlot.getLatestCompositeCandidate();
 
@@ -374,9 +376,8 @@ BallotProtocol::bumpState(Value const& value, uint32 n)
     }
 
     if (Logging::logTrace("SCP"))
-        CLOG(TRACE, "SCP") << "BallotProtocol::bumpState"
-                           << " i: " << mSlot.getSlotIndex()
-                           << " v: " << mSlot.getSCP().ballotToStr(newb);
+        CLOG_TRACE(SCP, "BallotProtocol::bumpState i: {} v: {}",
+                   mSlot.getSlotIndex(), mSlot.getSCP().ballotToStr(newb));
 
     bool updated = updateCurrentValue(newb);
 
@@ -430,9 +431,9 @@ BallotProtocol::updateCurrentValue(SCPBallot const& ballot)
             // following the protocol (and we end up with a smaller value)
             // not sure what is the best way to deal
             // with this situation
-            CLOG(ERROR, "SCP")
-                << "BallotProtocol::updateCurrentValue attempt to bump to "
-                   "a smaller value";
+            CLOG_ERROR(SCP,
+                       "BallotProtocol::updateCurrentValue attempt to bump to "
+                       "a smaller value");
             // can't just bump to the value as we may already have
             // statements at counter+1
             return false;
@@ -452,9 +453,8 @@ BallotProtocol::bumpToBallot(SCPBallot const& ballot, bool check)
     ZoneValue(static_cast<int64_t>(ballot.counter));
 
     if (Logging::logTrace("SCP"))
-        CLOG(TRACE, "SCP") << "BallotProtocol::bumpToBallot"
-                           << " i: " << mSlot.getSlotIndex()
-                           << " b: " << mSlot.getSCP().ballotToStr(ballot);
+        CLOG_TRACE(SCP, "BallotProtocol::bumpToBallot i: {} b: {}",
+                   mSlot.getSlotIndex(), mSlot.getSCP().ballotToStr(ballot));
 
     // `bumpToBallot` should be never called once we committed.
     dbgAssert(mPhase != SCP_PHASE_EXTERNALIZE);
@@ -892,9 +892,8 @@ BallotProtocol::setAcceptPrepared(SCPBallot const& ballot)
 {
     ZoneScoped;
     if (Logging::logTrace("SCP"))
-        CLOG(TRACE, "SCP") << "BallotProtocol::setAcceptPrepared"
-                           << " i: " << mSlot.getSlotIndex()
-                           << " b: " << mSlot.getSCP().ballotToStr(ballot);
+        CLOG_TRACE(SCP, "BallotProtocol::setAcceptPrepared i: {} b: {}",
+                   mSlot.getSlotIndex(), mSlot.getSCP().ballotToStr(ballot));
 
     // update our state
     bool didWork = setPrepared(ballot);
@@ -1051,9 +1050,8 @@ BallotProtocol::setConfirmPrepared(SCPBallot const& newC, SCPBallot const& newH)
 {
     ZoneScoped;
     if (Logging::logTrace("SCP"))
-        CLOG(TRACE, "SCP") << "BallotProtocol::setConfirmPrepared"
-                           << " i: " << mSlot.getSlotIndex()
-                           << " h: " << mSlot.getSCP().ballotToStr(newH);
+        CLOG_TRACE(SCP, "BallotProtocol::setConfirmPrepared i: {} h: {}",
+                   mSlot.getSlotIndex(), mSlot.getSCP().ballotToStr(newH));
 
     bool didWork = false;
 
@@ -1314,10 +1312,10 @@ BallotProtocol::setAcceptCommit(SCPBallot const& c, SCPBallot const& h)
 {
     ZoneScoped;
     if (Logging::logTrace("SCP"))
-        CLOG(TRACE, "SCP") << "BallotProtocol::setAcceptCommit"
-                           << " i: " << mSlot.getSlotIndex()
-                           << " new c: " << mSlot.getSCP().ballotToStr(c)
-                           << " new h: " << mSlot.getSCP().ballotToStr(h);
+        CLOG_TRACE(SCP,
+                   "BallotProtocol::setAcceptCommit i: {} new c: {} new h: {}",
+                   mSlot.getSlotIndex(), mSlot.getSCP().ballotToStr(c),
+                   mSlot.getSCP().ballotToStr(h));
 
     bool didWork = false;
 
@@ -1517,10 +1515,10 @@ BallotProtocol::setConfirmCommit(SCPBallot const& c, SCPBallot const& h)
 {
     ZoneScoped;
     if (Logging::logTrace("SCP"))
-        CLOG(TRACE, "SCP") << "BallotProtocol::setConfirmCommit"
-                           << " i: " << mSlot.getSlotIndex()
-                           << " new c: " << mSlot.getSCP().ballotToStr(c)
-                           << " new h: " << mSlot.getSCP().ballotToStr(h);
+        CLOG_TRACE(SCP,
+                   "BallotProtocol::setConfirmCommit i: {} new c: {} new h: {}",
+                   mSlot.getSlotIndex(), mSlot.getSCP().ballotToStr(c),
+                   mSlot.getSCP().ballotToStr(h));
 
     mCommit = makeBallot(c);
     mHighBallot = makeBallot(h);
@@ -1873,8 +1871,8 @@ BallotProtocol::advanceSlot(SCPStatement const& hint)
     ZoneScoped;
     mCurrentMessageLevel++;
     if (Logging::logTrace("SCP"))
-        CLOG(TRACE, "SCP") << "BallotProtocol::advanceSlot "
-                           << mCurrentMessageLevel << " " << getLocalState();
+        CLOG_TRACE(SCP, "BallotProtocol::advanceSlot {} {}",
+                   mCurrentMessageLevel, getLocalState());
 
     if (mCurrentMessageLevel >= MAX_ADVANCE_SLOT_RECURSION)
     {
@@ -1914,9 +1912,8 @@ BallotProtocol::advanceSlot(SCPStatement const& hint)
     }
 
     if (Logging::logTrace("SCP"))
-        CLOG(TRACE, "SCP") << "BallotProtocol::advanceSlot "
-                           << mCurrentMessageLevel << " - exiting "
-                           << getLocalState();
+        CLOG_TRACE(SCP, "BallotProtocol::advanceSlot {} - exiting {}",
+                   mCurrentMessageLevel, getLocalState());
 
     --mCurrentMessageLevel;
 
@@ -1976,23 +1973,19 @@ BallotProtocol::validateValues(SCPStatement const& st)
         // This shouldn't happen
         return SCPDriver::kInvalidValue;
     }
-    SCPDriver::ValidationLevel res = SCPDriver::kFullyValidatedValue;
-    for (auto const& v : values)
-    {
-        auto tr =
-            mSlot.getSCPDriver().validateValue(mSlot.getSlotIndex(), v, false);
-        if (tr != SCPDriver::kFullyValidatedValue)
-        {
-            if (tr == SCPDriver::kInvalidValue)
+
+    SCPDriver::ValidationLevel res = std::accumulate(
+        values.begin(), values.end(), SCPDriver::kFullyValidatedValue,
+        [&](SCPDriver::ValidationLevel lv, stellar::Value const& v) {
+            if (lv > SCPDriver::kInvalidValue)
             {
-                res = SCPDriver::kInvalidValue;
+                auto tr = mSlot.getSCPDriver().validateValue(
+                    mSlot.getSlotIndex(), v, false);
+                lv = std::min(tr, lv);
             }
-            else
-            {
-                res = SCPDriver::kMaybeValidValue;
-            }
-        }
-    }
+            return lv;
+        });
+
     return res;
 }
 
@@ -2122,6 +2115,7 @@ BallotProtocol::getJsonQuorumInfo(NodeID const& id, bool summary, bool fullKeys)
                 n_disagree++;
             }
         }
+        return true;
     });
     if (summary)
     {
@@ -2130,12 +2124,12 @@ BallotProtocol::getJsonQuorumInfo(NodeID const& id, bool summary, bool fullKeys)
         delayed = n_delayed;
     }
 
-    auto f = LocalNode::findClosestVBlocking(*qSet, mLatestEnvelopes,
-                                             [&](SCPStatement const& st) {
-                                                 return areBallotsCompatible(
-                                                     getWorkingBallot(st), b);
-                                             },
-                                             &id);
+    auto f = LocalNode::findClosestVBlocking(
+        *qSet, mLatestEnvelopes,
+        [&](SCPStatement const& st) {
+            return areBallotsCompatible(getWorkingBallot(st), b);
+        },
+        &id);
     ret["fail_at"] = static_cast<int>(f.size());
 
     if (!summary)

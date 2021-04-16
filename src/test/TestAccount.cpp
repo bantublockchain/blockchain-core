@@ -3,10 +3,12 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "test/TestAccount.h"
+#include "crypto/SHA.h"
 #include "ledger/LedgerManager.h"
 #include "ledger/LedgerTxn.h"
 #include "ledger/LedgerTxnEntry.h"
 #include "ledger/LedgerTxnHeader.h"
+#include "ledger/TrustLineWrapper.h"
 #include "main/Application.h"
 #include "test/TestExceptions.h"
 #include "test/TxTests.h"
@@ -38,6 +40,14 @@ TestAccount::updateSequenceNumber()
             mSn = entry.current().data.account().seqNum;
         }
     }
+}
+int64_t
+TestAccount::getTrustlineBalance(Asset const& asset) const
+{
+    LedgerTxn ltx(mApp.getLedgerTxnRoot());
+    auto trustLine = stellar::loadTrustLine(ltx, getPublicKey(), asset);
+    REQUIRE(trustLine);
+    return trustLine.getBalance();
 }
 
 int64_t
@@ -441,5 +451,11 @@ TestAccount::pathPaymentStrictSend(PublicKey const& destination,
     REQUIRE(!noIssuer);
 
     return getFirstResult(*transaction).tr().pathPaymentStrictSendResult();
+}
+
+void
+TestAccount::clawback(PublicKey const& from, Asset const& asset, int64_t amount)
+{
+    applyTx(tx({txtest::clawback(from, asset, amount)}), mApp);
 }
 };

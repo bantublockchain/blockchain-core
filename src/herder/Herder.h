@@ -43,8 +43,12 @@ class Herder
     // timeout before considering the node out of sync
     static std::chrono::seconds const CONSENSUS_STUCK_TIMEOUT_SECONDS;
 
+    // timeout before triggering out of sync recovery
+    static std::chrono::seconds const OUT_OF_SYNC_RECOVERY_TIMER;
+
     // Maximum time slip between nodes.
-    static std::chrono::seconds const MAX_TIME_SLIP_SECONDS;
+    static std::chrono::seconds constexpr MAX_TIME_SLIP_SECONDS =
+        std::chrono::seconds{60};
 
     // How many seconds of inactivity before evicting a node.
     static std::chrono::seconds const NODE_EXPIRATION_SECONDS;
@@ -56,6 +60,10 @@ class Herder
     static std::chrono::nanoseconds const TIMERS_THRESHOLD_NANOSEC;
 
     static std::unique_ptr<Herder> create(Application& app);
+
+    // number of additional ledgers we retrieve from peers before our own lcl,
+    // this is to help recover potential missing SCP messages for other nodes
+    static uint32 const SCP_EXTRA_LOOKBACK_LEDGERS;
 
     enum State
     {
@@ -120,6 +128,9 @@ class Herder
     // and local state
     virtual uint32_t getCurrentLedgerSeq() const = 0;
 
+    // return the smallest ledger number we need messages for when asking peers
+    virtual uint32 getMinLedgerSeqToAskPeers() const = 0;
+
     // Return the maximum sequence number for any tx (or 0 if none) from a given
     // sender in the pending or recent tx sets.
     virtual SequenceNumber getMaxSeqInPendingTxs(AccountID const&) = 0;
@@ -135,6 +146,8 @@ class Herder
     virtual void setUpgrades(Upgrades::UpgradeParameters const& upgrades) = 0;
     // gets the upgrades that are scheduled by this node
     virtual std::string getUpgradesJson() = 0;
+
+    virtual void forceSCPStateIntoSyncWithLastClosedLedger() = 0;
 
     virtual ~Herder()
     {

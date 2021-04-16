@@ -72,7 +72,11 @@ store(Application& app, UpdateList const& apply, AbstractLedgerTxn* ltxPtr,
             REQUIRE(false);
         }
 
-        if (entry && entry.current().data.type() == ACCOUNT)
+        if (previous && !current)
+        {
+            REQUIRE_THROWS_AS(!entry, std::runtime_error);
+        }
+        else if (entry && entry.current().data.type() == ACCOUNT)
         {
             normalizeSigners(entry.current().data.account());
         }
@@ -175,6 +179,13 @@ normalizeSigners(AccountEntry& acc)
         acc.ext.v1().ext.v2().signerSponsoringIDs.swap(
             sortedSignerSponsoringIDs);
     }
+}
+
+int64_t
+getMinBalance(Application& app, AccountEntry const& acc)
+{
+    LedgerTxn ltx(app.getLedgerTxnRoot());
+    return getMinBalance(ltx.loadHeader().current(), acc);
 }
 }
 }

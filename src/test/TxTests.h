@@ -7,7 +7,6 @@
 #include "crypto/SecretKey.h"
 #include "herder/LedgerCloseData.h"
 #include "overlay/StellarXDR.h"
-#include "test/TestPrinter.h"
 #include "util/optional.h"
 
 namespace stellar
@@ -73,8 +72,14 @@ void validateTxResults(TransactionFramePtr const& tx, Application& app,
                        TransactionResult const& applyResult = {});
 
 TxSetResultMeta
+closeLedgerOn(Application& app, uint32 ledgerSeq, time_t closeTime,
+              std::vector<TransactionFrameBasePtr> const& txs = {},
+              bool skipValid = false);
+
+TxSetResultMeta
 closeLedgerOn(Application& app, uint32 ledgerSeq, int day, int month, int year,
-              std::vector<TransactionFrameBasePtr> const& txs = {});
+              std::vector<TransactionFrameBasePtr> const& txs = {},
+              bool skipValid = false);
 
 SecretKey getRoot(Hash const& networkID);
 
@@ -186,10 +191,12 @@ SetOptionsArguments clearFlags(uint32_t clearFlags);
 SetOptionsArguments setInflationDestination(AccountID inflationDest);
 SetOptionsArguments setHomeDomain(std::string const& homeDomain);
 
-Operation sponsorFutureReserves(PublicKey const& sponsoredID);
-Operation confirmAndClearSponsor();
-Operation updateSponsorship(LedgerKey const& key);
-Operation updateSponsorship(AccountID const& accID, SignerKey const& key);
+Operation beginSponsoringFutureReserves(PublicKey const& sponsoredID);
+Operation endSponsoringFutureReserves();
+Operation revokeSponsorship(LedgerKey const& key);
+Operation revokeSponsorship(AccountID const& accID, SignerKey const& key);
+
+Operation clawback(AccountID const& from, Asset const& asset, int64_t amount);
 
 Asset makeNativeAsset();
 Asset makeInvalidAsset();

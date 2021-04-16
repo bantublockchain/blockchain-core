@@ -78,6 +78,11 @@ The `manualclose` command allows to close a ledger, this is used when the instan
 configured with `MANUAL_CLOSE=true`.
 With this you can test various scenario where ledger boundaries could be important.
 
+If `RUN_STANDALONE=true` along with `MANUAL_CLOSE=true`, then
+the `manualclose` command may also control some of the parameters of the
+ledger that it causes to close.  (The `closeTime` parameter may be no later
+than the first second of the year 2200, GMT.)
+
 On private networks, you can use the `generateload` command to create accounts and generate
 synthetic traffic.
 
@@ -142,7 +147,7 @@ transactions or ledger states) must be downloaded and verified sequentially. It 
 worthwhile to save and reuse such a trusted reference file multiple times before regenerating it.
 
 ##### Experimental fast "meta data generation"
-`catchup` has a command line flag `--replay-in-memory` that when combined with the
+`catchup` has a command line flag `--in-memory` that when combined with the
 `METADATA_OUTPUT_STREAM` allows a stellar-core instance to stream meta data instead
 of using a database as intermediate store.
 
@@ -151,6 +156,17 @@ of history.
 
 If you don't specify any value for stream the command will just replay transactions
 in memory and throw away all meta. This can be useful for performance testing the transaction processing subsystem.
+
+The `--in-memory` flag is also supported by the `run` command, which can be used to
+run a lightweight, stateless validator or watcher node, and this can be combined with
+`METADATA_OUTPUT_STREAM` to stream network activity to another process.
+
+By default, such a stateless node in `run` mode will catch up to the network starting from the
+network's most recent checkpoint, but this behaviour can be further modified using two flags
+(that must be used together) called `--start-at-ledger <N>` and `--start-at-hash <HEXHASH>`. These
+cause the node to start with a fast in-memory catchup to ledger `N` with hash `HEXHASH`, and then
+replay ledgers forward to the current state of the network.
+
 
 #### Publish backlog
 There is a command `publish` that allows to flush the publish backlog without starting
